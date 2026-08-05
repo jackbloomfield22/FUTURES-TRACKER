@@ -1,47 +1,52 @@
 # Futures Book
 
-A personal sports futures ticket ledger. Drop a screenshot of a bet slip and AI reads it into a ticket. Track open positions as split legs, run live edge checks against current market odds, settle markets with one tap (one winner auto-resolves the rest), and keep season-by-season money history.
+Personal sports futures ledger. Screenshot a slip and AI parses it into a ticket; the book tracks open positions, live prices, edge reads, settlements, win cascades across mutually exclusive markets, and season history with net P/L and ROI.
 
-## Features
+Live at: your Vercel deployment. Repo is the source of truth; pushes to `main` auto-deploy.
 
-- **Slip intake**: drop, paste, or browse a screenshot of any sportsbook slip or bet-history list. Claude vision extracts book, market, selection, odds, stake, and status for every bet on screen. Manual entry and JSON paste-import also supported.
-- **Split-leg tracking**: multiple tickets on the same pick stay individual legs so you can cash one out early and ride the rest. Leg numbering, per-leg cash out, and market cards that show realized money alongside open risk.
-- **Edge check / Market check**: live web search for current odds on your picks, compared against your entry price, with a rough fair cash-out and a HOLD / TRIM / SELL lean. Market check values every leg in a market and says which to cash vs ride.
-- **Win cascade**: mark a ticket Won and every other open ticket in that market resolves automatically (same pick wins, the rest go to lost). One MVP per season. Parlays excluded. Undo available.
-- **Money tracking**: Markets tab shows per-market performance, settled and open. History tab groups by season with W-L-CO record, staked, net, and ROI. League and bet-type filter chips are generated from your data, so new leagues and award types become filterable instantly.
-- **Slip archive**: every screenshot you drop is compressed and archived with its ticket.
-- **Backup and restore**: export the entire book as a JSON code; restore merges by ticket so nothing duplicates.
+## Architecture
 
-## Run it
+```
+src/
+  FuturesBook.jsx   the app
+  AuthGate.jsx      sign in / open an account / device-only gate
+  lib/store.js      storage seam: artifact | cloud | device backends
+  lib/cloud.js      client for the /api functions
+  lib/odds.js       live odds fetch, market mapping, name matching
+api/                Vercel serverless functions (zero dependencies)
+  auth.js           signup / login / logout / session
+  data.js           per-account key-value storage (namespaced in Redis)
+  odds.js           The Odds API proxy with 6h Redis cache
+  health.js         reports which server features are configured
+```
 
-```bash
+The app degrades gracefully: with no backend configured it runs exactly as before on device localStorage, no login shown. Each server feature turns on when its config exists.
+
+## One-time Vercel setup
+
+1. **Accounts + sync:** Vercel project > Storage tab > Create Database > **Redis** (Upstash, via Marketplace). Connect it to this project. That injects `KV_REST_API_URL` / `KV_REST_API_TOKEN` automatically. Redeploy. The members window appears and accounts work.
+2. **Live odds:** grab a free key at [the-odds-api.com](https://the-odds-api.com) (500 credits/month). Vercel > Settings > Environment Variables > add `ODDS_API_KEY`. Redeploy. Responses cache in Redis for 6 hours, so the free tier is plenty.
+
+No other configuration. The serverless functions have zero npm dependencies.
+
+## Accounts and data
+
+- Passwords are scrypt-hashed with per-user salts; sessions are random tokens with a 30-day TTL in Redis.
+- All account data lives under `u:{email}:*` keys.
+- First sign-in on a device that already has a book imports those tickets to the account (cloud data wins if both exist).
+- "Skip: keep my book on this device only" runs the app on localStorage, same as before accounts existed.
+
+## Live odds coverage
+
+Prices come from The Odds API `outrights` markets, quoted at one book of record (FanDuel by default, switchable in Live odds settings). Mapped today: NFL Super Bowl, NBA/NHL championship, MLB World Series, NCAA titles, golf majors. **Award futures (MVP, Cy Young, ROY) have no public feed there**; those tickets say so honestly, and the AI Edge check covers them instead. To extend coverage, add a rule to `RULES` in `src/lib/odds.js`.
+
+## Local dev
+
+```
 npm install
-npm run dev
+npm run dev        # UI only; /api functions need `vercel dev` + .env (see .env.example)
 ```
 
-Build for production:
+## Working on this repo
 
-```bash
-npm run build
-```
-
-Output lands in `dist/`.
-
-## Deploy (Netlify)
-
-Either drag the `dist/` folder into Netlify, or connect this repo with:
-
-- Build command: `npm run build`
-- Publish directory: `dist`
-
-## AI features and the API key
-
-Standalone, the app calls the Anthropic API directly from the browser. Open the **+ New ticket** tab, scroll to **AI settings**, and paste an Anthropic API key (create one at console.anthropic.com). The key is stored in your browser's localStorage only and is sent nowhere except api.anthropic.com. API usage is billed to your key; slip parses and edge checks each cost fractions of a cent to a few cents.
-
-Without a key, everything except AI parsing and edge checks still works: manual entry, paste-import, settling, markets, history, backup.
-
-## Data
-
-All data lives in your browser's localStorage (`futures-ledger-v1` plus `slip:*` keys for archived screenshots). It persists across sessions on the same device and browser. Use Backup and restore to move between devices.
-
-The same component also runs as a Claude artifact, where it uses Claude's artifact storage and keyless API access automatically.
+Built and updated with Claude. Preferred loop: open the folder in Claude Code (or point a cloud session at this repo), describe the change, let it commit and push. Vercel deploys `main` automatically and gives every branch its own preview URL.

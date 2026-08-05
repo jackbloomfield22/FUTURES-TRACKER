@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { store, IS_ARTIFACT } from "./lib/store.js";
+import { fetchLiveOdds, sportKeyFor, implied, BOOKS, getOddsPrefs, saveOddsPrefs } from "./lib/odds.js";
 
 /* FUTURES BOOK — personal futures ticket ledger
    - Screenshot a slip, Claude parses it into a ticket
@@ -7,27 +9,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
    - Persists via store
 */
 
-const STORAGE_KEY = "futures-ledger-v1";
+const STORAGE_KEY = "futures-ledger-v1"; // must match LEDGER_KEY in lib/store.js
 
 /* Environment: inside a Claude artifact, store and keyless API access exist.
-   Standalone (Netlify/local), persistence falls back to localStorage and API calls
-   need the user's Anthropic key. */
-const IS_ARTIFACT = typeof window !== "undefined" && !!window.storage;
-
-const localShim = {
-  async get(k) { const v = localStorage.getItem(k); return v === null ? null : { key: k, value: v }; },
-  async set(k, v) { localStorage.setItem(k, v); return { key: k, value: v }; },
-  async delete(k) { localStorage.removeItem(k); return { key: k, deleted: true }; },
-  async list(prefix) {
-    const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!prefix || (k && k.startsWith(prefix))) keys.push(k);
-    }
-    return { keys };
-  },
-};
-const store = IS_ARTIFACT ? window.storage : (typeof window !== "undefined" ? localShim : null);
+   Standalone (Vercel/local), AuthGate picks the backend: a signed-in account
+   syncs through /api/data, otherwise localStorage on this device. */
 
 function getApiKey() {
   try { return localStorage.getItem("fb-api-key") || ""; } catch (e) { return ""; }
@@ -460,6 +446,10 @@ export default function FuturesBook() {
   const [sportFilter, setSportFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [dragOver, setDragOver] = useState(false);
+  const [live, setLive] = useState(null); // { prices, misses, errors, ts }
+  const [liveBusy, setLiveBusy] = useState(false);
+  const [oddsPrefs, setOddsPrefs] = useState(() => getOddsPrefs());
+  const [oddsKeyDraft, setOddsKeyDraft] = useState(() => getOddsPrefs().key);
   const fileRef = useRef(null);
 
   /* load: verify storage works, then merge stored data with the baked-in seed */
@@ -831,6 +821,37 @@ export default function FuturesBook() {
     setAiStatus("unknown");
   };
 
+  const refreshLive = async (openList) => {
+    setLiveBusy(true);
+    try {
+      const r = await fetchLiveOdds(openList, oddsPrefs.book);
+      setLive(r);
+    } catch (e) {
+      setLive({ prices: {}, misses: [], errors: [e.message], ts: Date.now() });
+    } finally {
+      setLiveBusy(false);
+    }
+  };
+
+  const saveOddsSettings = (book, key) => {
+    const next = { book: book || oddsPrefs.book, key: key !== undefined ? key.trim() : oddsPrefs.key };
+    saveOddsPrefs(next);
+    setOddsPrefs(next);
+    setLive(null); // prices from the old book no longer apply
+  };
+
+  /* A held futures ticket gains when the market shortens on the pick:
+     implied probability now above your entry means the money agrees with you. */
+  const liveDrift = (p, lp) => {
+    const entry = implied(p.odds);
+    const now = implied(lp.price);
+    if (!entry || !now) return "flat";
+    const delta = now - entry;
+    if (delta > 0.004) return "steam";
+    if (delta < -0.004) return "drift";
+    return "flat";
+  };
+
   const AI_DOWN_MSG = IS_ARTIFACT
     ? "AI can't connect in this view. Open this artifact on claude.ai in a browser to run checks."
     : "AI unavailable. Add or check your API key under AI settings in the + New ticket tab.";
@@ -1076,6 +1097,31 @@ export default function FuturesBook() {
 
             {!IS_ARTIFACT && (
               <div className="fb-import">
+                <h4>Live odds</h4>
+                <p>Pick your book of record; the Open tab quotes its current price next to every ticket it can find a feed for. Prices come from The Odds API. If this deploy has a server key, it just works; otherwise paste your own free key from the-odds-api.com and it stays on this device.</p>
+                <div className="fb-row">
+                  <select
+                    className="fb-key-input"
+                    style={{ maxWidth: 180 }}
+                    value={oddsPrefs.book}
+                    onChange={(e) => saveOddsSettings(e.target.value, undefined)}
+                  >
+                    {BOOKS.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                  </select>
+                  <input
+                    className="fb-key-input"
+                    type="password"
+                    value={oddsKeyDraft}
+                    onChange={(e) => setOddsKeyDraft(e.target.value)}
+                    placeholder="Odds API key (optional)"
+                  />
+                  <button className="fb-btn small" onClick={() => saveOddsSettings(undefined, oddsKeyDraft)}>Save</button>
+                </div>
+              </div>
+            )}
+
+            {!IS_ARTIFACT && (
+              <div className="fb-import">
                 <h4>AI settings</h4>
                 <p>Screenshot parsing and edge checks call the Anthropic API from your browser. Paste an API key; it stays on this device only.</p>
                 <div className="fb-row">
@@ -1210,6 +1256,22 @@ export default function FuturesBook() {
             </div>
           )}
           <FilterBar tickets={open} sportFilter={sportFilter} typeFilter={typeFilter} onSport={setSportFilter} onType={setTypeFilter} />
+          {open.length > 0 && (
+            <div className="fb-liveband">
+              <button className="fb-btn small" onClick={() => refreshLive(open)} disabled={liveBusy}
+                title="Pulls current futures prices from your book of record and stamps each open ticket.">
+                {liveBusy ? "Pulling board…" : live ? "Refresh live odds" : "Pull live odds"}
+              </button>
+              <span className="fb-dim">
+                {(BOOKS.find((b) => b.key === oddsPrefs.book) || BOOKS[0]).label} is the book of record
+                {live ? " · updated " + new Date(live.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}
+              </span>
+              {live && live.errors.length > 0 && <span className="fb-err">{live.errors[0]}</span>}
+              {live && live.errors.length === 0 && live.misses.some((m) => m.reason === "no feed for this market") && (
+                <span className="fb-dim">Award markets (MVP, Cy Young) have no public feed; use Edge check on those.</span>
+              )}
+            </div>
+          )}
           {open.length > 0 && openShown.length === 0 && (
             <div className="fb-empty">
               Nothing matches those filters. <button className="fb-link" onClick={clearFilters}>Clear filters</button>
@@ -1294,6 +1356,24 @@ export default function FuturesBook() {
                     <div className="stub-odds">{fmtOdds(p.odds)}</div>
                     <div className="stub-line"><label>Risk</label><span>{fmtMoney(p.stake)}</span></div>
                     <div className="stub-line"><label>Collect</label><span>{fmtMoney(p.stake + profitFor(p.odds, p.stake))}</span></div>
+                    {live && live.prices[p.id] && (() => {
+                      const lp = live.prices[p.id];
+                      const drift = liveDrift(p, lp);
+                      return (
+                        <div
+                          className={"stub-line stub-live " + drift}
+                          title={"Now " + fmtOdds(lp.price) + " at " + lp.book +
+                            (lp.preferred ? "" : " (your book isn't listing this; nearest price shown)") +
+                            " · matched \"" + lp.outcome + "\""}
+                        >
+                          <label>Now</label>
+                          <span>{fmtOdds(lp.price)}{drift === "steam" ? " ▲" : drift === "drift" ? " ▼" : ""}</span>
+                        </div>
+                      );
+                    })()}
+                    {live && !live.prices[p.id] && sportKeyFor(p) && (
+                      <div className="stub-line stub-live flat"><label>Now</label><span>—</span></div>
+                    )}
                     <div className="stub-date">{p.datePlaced}</div>
                   </div>
                 </article>
@@ -1609,6 +1689,13 @@ function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType }) {
 /* ---------- styles ---------- */
 
 const css = `
+/* live odds */
+.fb-liveband { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
+.stub-live span { font-size: 13px; }
+.stub-live.steam span { color: var(--win-ink); }
+.stub-live.drift span { color: var(--loss-ink); }
+.stub-live.flat span { opacity: 0.75; }
+
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
 
 .fb-root {
