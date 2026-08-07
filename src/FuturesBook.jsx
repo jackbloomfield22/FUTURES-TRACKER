@@ -464,6 +464,8 @@ export default function FuturesBook() {
   const [pasteText, setPasteText] = useState("");
   const [pasteErr, setPasteErr] = useState("");
   const [aiStatus, setAiStatus] = useState("unknown");
+  const [aiErr, setAiErr] = useState("");
+  const [serverInfo, setServerInfo] = useState(null); // /api/health: {kv, odds, ai}
   const [pendingSlip, setPendingSlip] = useState(null); // captured slip awaiting a ticket
   const [slips, setSlips] = useState(null); // null = archive not loaded yet
   const [expandedSlip, setExpandedSlip] = useState(null);
@@ -708,12 +710,19 @@ export default function FuturesBook() {
 
   /* one-time API reachability check so we know if AI features work in this view */
   useEffect(() => {
+    if (IS_ARTIFACT) return;
+    fetch("/api/health")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d && typeof d.kv !== "undefined") setServerInfo(d); })
+      .catch(() => { /* no server on this deploy */ });
+  }, []);
+
+  useEffect(() => {
     if (aiStatus !== "unknown") return;
-    if (!IS_ARTIFACT && !getApiKey()) { setAiStatus("down"); return; }
     setAiStatus("checking");
     callClaude({ max_tokens: 8, messages: [{ role: "user", content: "Reply with OK" }] })
-      .then(() => setAiStatus("ok"))
-      .catch(() => setAiStatus("down"));
+      .then(() => { setAiStatus("ok"); setAiErr(""); })
+      .catch((e) => { setAiStatus("down"); setAiErr(e.message || ""); });
   }, [aiStatus]);
 
   /* save draft as position */
@@ -885,7 +894,7 @@ export default function FuturesBook() {
 
   const AI_DOWN_MSG = IS_ARTIFACT
     ? "AI can't connect in this view. Open this artifact on claude.ai in a browser to run checks."
-    : "AI unavailable. Sign in if this site has a server key, or add your own under AI settings in the + New ticket tab.";
+    : "AI unavailable: " + (aiErr || "sign in if this site has a server key, or add your own under AI settings in the + New ticket tab.");
 
   const runEdge = async (p) => {
     if (aiStatus === "down") {
@@ -1082,7 +1091,7 @@ export default function FuturesBook() {
               {aiStatus === "checking" && <p className="fb-status">Checking AI intake…</p>}
               {aiStatus === "ok" && <p className="fb-status ok">AI intake connected</p>}
               {aiStatus === "down" && (
-                <p className="fb-status bad">{IS_ARTIFACT ? "AI intake can't reach the API in this view. Use Paste from chat below, or open this artifact on claude.ai in a desktop browser." : "AI intake needs an API key. Add one under AI settings below."}</p>
+                <p className="fb-status bad">{IS_ARTIFACT ? "AI intake can't reach the API in this view. Use Paste from chat below, or open this artifact on claude.ai in a desktop browser." : "AI intake: " + (aiErr || "needs a key. Sign in if this site has a server key, or add one under AI settings below.")}</p>
               )}
             </div>
 
@@ -1155,6 +1164,12 @@ export default function FuturesBook() {
               <div className="fb-import">
                 <h4>AI settings</h4>
                 <p>Screenshot parsing, edge checks, and market checks run on Claude. If this site has a server key (ANTHROPIC_API_KEY on Vercel), every signed-in member gets AI on every device with nothing to paste. Otherwise, add your own key here; it stays on this device only.</p>
+                {serverInfo && (
+                  <p className="fb-status">
+                    Server config: AI key {serverInfo.ai ? "✓" : "not set"} · Odds key {serverInfo.odds ? "✓" : "not set"} · Accounts {serverInfo.kv ? "✓" : "not set"}
+                  </p>
+                )}
+                {!serverInfo && <p className="fb-status">Server config: /api not reachable on this deploy (device keys only).</p>}
                 <div className="fb-row">
                   <input
                     className="fb-key-input"
