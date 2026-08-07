@@ -9,8 +9,8 @@ import { sessionEmail, readBody } from "./_lib/auth.js";
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return res.status(503).json({ error: "No ANTHROPIC_API_KEY set on Vercel." });
+  const key = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  if (!key) return res.status(503).json({ error: "No ANTHROPIC_API_KEY (or CLAUDE_API_KEY) set on Vercel." });
 
   if (kvConfigured()) {
     const email = await sessionEmail(req);
