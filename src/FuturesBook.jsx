@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { store, IS_ARTIFACT } from "./lib/store.js";
 import { fetchLiveOdds, sportKeyFor, implied, BOOKS, getOddsPrefs, saveOddsPrefs } from "./lib/odds.js";
+import { getSession } from "./lib/cloud.js";
 
 /* FUTURES BOOK — personal futures ticket ledger
    - Screenshot a slip, Claude parses it into a ticket
@@ -107,18 +108,48 @@ function netOf(p) {
 /* ---------- Claude API ---------- */
 
 async function callClaude(body) {
-  const headers = { "Content-Type": "application/json" };
-  if (!IS_ARTIFACT) {
-    const key = getApiKey();
-    if (!key) throw new Error("no API key set. Add one under AI settings in the + New ticket tab");
-    headers["x-api-key"] = key;
-    headers["anthropic-version"] = "2023-06-01";
-    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  const payload = { model: "claude-sonnet-4-6", max_tokens: 1000, ...body };
+
+  if (IS_ARTIFACT) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = data && data.error && data.error.message ? data.error.message : "API error " + res.status;
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  /* Standalone: server key first (one Vercel env var covers every device
+     and account), the device key from AI settings as fallback. */
+  let proxyErr = null;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    const session = getSession();
+    if (session) headers["x-fb-session"] = session;
+    const res = await fetch("/api/ai", { method: "POST", headers, body: JSON.stringify(payload) });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data && data.content) return data;
+    if (data) proxyErr = (data.error && data.error.message) || data.error || null;
+  } catch (e) { /* no proxy on this deploy; fall through */ }
+
+  const key = getApiKey();
+  if (!key) {
+    throw new Error(proxyErr || "no AI source. Sign in if this site has a server key, or add your own under AI settings in the + New ticket tab");
   }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers,
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, ...body }),
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
@@ -854,7 +885,7 @@ export default function FuturesBook() {
 
   const AI_DOWN_MSG = IS_ARTIFACT
     ? "AI can't connect in this view. Open this artifact on claude.ai in a browser to run checks."
-    : "AI unavailable. Add or check your API key under AI settings in the + New ticket tab.";
+    : "AI unavailable. Sign in if this site has a server key, or add your own under AI settings in the + New ticket tab.";
 
   const runEdge = async (p) => {
     if (aiStatus === "down") {
@@ -1123,7 +1154,7 @@ export default function FuturesBook() {
             {!IS_ARTIFACT && (
               <div className="fb-import">
                 <h4>AI settings</h4>
-                <p>Screenshot parsing and edge checks call the Anthropic API from your browser. Paste an API key; it stays on this device only.</p>
+                <p>Screenshot parsing, edge checks, and market checks run on Claude. If this site has a server key (ANTHROPIC_API_KEY on Vercel), every signed-in member gets AI on every device with nothing to paste. Otherwise, add your own key here; it stays on this device only.</p>
                 <div className="fb-row">
                   <input
                     className="fb-key-input"
