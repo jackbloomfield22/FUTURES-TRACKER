@@ -390,18 +390,18 @@ async function marketCheck(openRows, settledRows) {
     settledRows && settledRows.length
       ? `\nAlready settled from this market: ${settledRows.length} leg(s), realized ${fmtMoney(realized, true)}.`
       : "";
-  const prompt = `Today is ${todayISO()}. I hold these open futures tickets, all in the same market: ${p0.market} (${p0.season}, ${p0.sport}). Tickets on the same selection are deliberately split into separate legs so I can cash them out individually as the price moves:
+  const prompt = `Today is ${todayISO()}. I hold open futures tickets in this market: ${p0.market} (${p0.season}, ${p0.sport}). My entries:
 ${lines}${realizedLine}
 
-Search the web for the CURRENT odds on each selection. Then give me a tight plain-text read, 5 sentences max:
-1) Current odds per selection (say which you can't find).
-2) Which positions gained or lost the most value vs entry.
-3) A rough fair cash-out per leg in dollars.
-4) If money should come off the table, name exactly which leg(s) by stake to cash and which to ride.
-5) End with one word for the group: HOLD, TRIM, or SELL.
-No preamble, no markdown.`;
+Search the web for the CURRENT odds on each selection. Reply as a quote board, nothing else:
+- One line per selection, exactly this shape:
+  {Selection}: FanDuel {odds} · DraftKings {odds} (entry {my odds} · value {+/-N%})
+- Quote FanDuel and DraftKings. If either doesn't list it, substitute one other major US book and name it. If nobody lists it, write "no board found".
+- "value" is the change in implied win probability vs my entry, as a percent: positive means my position gained value.
+- Last line: one word for the whole group, HOLD, TRIM, or SELL.
+No sentences, no advice, no explanations, no markdown.`;
   const data = await callClaude({
-    max_tokens: 1500,
+    max_tokens: 400,
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search" }],
   });
@@ -414,11 +414,10 @@ Sport: ${p.sport} | Market: ${p.market} | Selection: ${p.selection}
 My odds: ${fmtOdds(p.odds)} | Stake: ${fmtMoney(p.stake)} | To collect if it wins: ${fmtMoney(p.stake + profitFor(p.odds, p.stake))}${splitLegs > 0 ? `
 Note: this is one of ${splitLegs + 1} split tickets I hold on this same selection in this market, deliberately staggered so I can cash legs out separately. Judge this leg on its own but factor that in.` : ""}
 
-Search the web for the CURRENT consensus odds on this exact market and selection. Then give me a tight read in plain text, 3 sentences max:
-1) Current market odds (say if you can't find them).
-2) Whether my position gained or lost value vs my entry, with a rough fair cash-out estimate in dollars based on the implied probability shift.
-3) A one-word lean at the end: HOLD, TRIM, or SELL.
-No preamble, no markdown.`;
+Search the web for the CURRENT odds on this exact market and selection. Reply as a quote line, nothing else:
+{Selection}: FanDuel {odds} · DraftKings {odds} (entry ${fmtOdds(p.odds)} · value {+/-N%})
+If either book doesn't list it, substitute one other major US book and name it; if nobody lists it, write "no board found". "value" is the change in implied win probability vs my entry, positive meaning my position gained value. Then on a new line, one word: HOLD, TRIM, or SELL.
+No sentences, no advice, no markdown.`;
   const data = await callClaude({
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -1388,7 +1387,7 @@ export default function FuturesBook() {
                       </div>
                     ) : (
                       <div className="ticket-actions">
-                        <button className="fb-btn small" onClick={() => runEdge(p)} disabled={edge && edge.loading} title="Live-searches the web for this pick's current odds, compares to your entry price, estimates a fair cash-out, and stamps HOLD / TRIM / SELL.">
+                        <button className="fb-btn small" onClick={() => runEdge(p)} disabled={edge && edge.loading} title="Quotes current FanDuel and DraftKings odds on this pick, with value change vs your entry, stamped HOLD / TRIM / SELL.">
                           {edge && edge.loading ? "Checking…" : "Edge check"}
                         </button>
                         <button className="fb-btn ghost small" onClick={() => setSettling({ id: p.id, mode: "grade" })}>Settle</button>
@@ -1463,7 +1462,7 @@ export default function FuturesBook() {
                         <div className="mkt-title">{marketType(p0.market)} · {p0.season}</div>
                         <div className="mkt-sub">{p0.market} · {openRows.length} open leg{openRows.length > 1 ? "s" : ""}</div>
                       </div>
-                      <button className="fb-btn small" onClick={() => runMarketCheck(k, openRows, settledRows)} disabled={mc && mc.loading} title="Live-searches current odds on every selection you hold in this market, values each leg, and says which leg to cash vs ride.">
+                      <button className="fb-btn small" onClick={() => runMarketCheck(k, openRows, settledRows)} disabled={mc && mc.loading} title="Quotes current FanDuel and DraftKings odds on every selection you hold here, with value change vs your entry.">
                         {mc && mc.loading ? "Checking…" : "Market check"}
                       </button>
                     </div>
