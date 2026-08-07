@@ -401,9 +401,10 @@ Search the web for the CURRENT odds on each selection. Reply as a quote board, n
 - Last line: one word for the whole group, HOLD, TRIM, or SELL.
 No sentences, no advice, no explanations, no markdown.`;
   const data = await callClaude({
+    model: "claude-haiku-4-5",
     max_tokens: 400,
     messages: [{ role: "user", content: prompt }],
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
+    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
   });
   return textOf(data);
 }
@@ -419,8 +420,10 @@ Search the web for the CURRENT odds on this exact market and selection. Reply as
 If either book doesn't list it, substitute one other major US book and name it; if nobody lists it, write "no board found". "value" is the change in implied win probability vs my entry, positive meaning my position gained value. Then on a new line, one word: HOLD, TRIM, or SELL.
 No sentences, no advice, no markdown.`;
   const data = await callClaude({
+    model: "claude-haiku-4-5",
+    max_tokens: 250,
     messages: [{ role: "user", content: prompt }],
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
+    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
   });
   return textOf(data);
 }
