@@ -20,6 +20,7 @@ function getApiKey() {
   try { return localStorage.getItem("fb-api-key") || ""; } catch (e) { return ""; }
 }
 const SPORTS = ["MLB", "NBA", "NFL", "NHL", "Soccer", "Golf", "Tennis", "Other"];
+const sportRank = (s) => { const i = SPORTS.indexOf(s); return i === -1 ? SPORTS.length : i; };
 
 /* ---------- helpers ---------- */
 
@@ -1002,10 +1003,15 @@ export default function FuturesBook() {
   const openGroupList = Object.entries(allGroups)
     .filter(([, rows]) => rows.some((p) => p.status === "open"))
     .map(([k, rows]) => [k, rows.filter((p) => p.status === "open"), rows.filter((p) => p.status !== "open")])
-    .sort((a, b) => b[1].reduce((s, p) => s + p.stake, 0) - a[1].reduce((s, p) => s + p.stake, 0));
+    .sort((a, b) =>
+      sportRank(a[1][0].sport) - sportRank(b[1][0].sport) ||
+      marketType(a[1][0].market).localeCompare(marketType(b[1][0].market)) ||
+      b[1].reduce((s, p) => s + p.stake, 0) - a[1].reduce((s, p) => s + p.stake, 0));
   const settledGroupList = Object.entries(allGroups)
     .filter(([, rows]) => rows.every((p) => p.status !== "open"))
     .sort((a, b) => {
+      const bySport = sportRank(a[1][0].sport) - sportRank(b[1][0].sport);
+      if (bySport) return bySport;
       const last = (rows) => rows.map((p) => p.dateSettled || "").sort().pop() || "";
       return last(b[1]).localeCompare(last(a[1]));
     });
@@ -1366,10 +1372,15 @@ export default function FuturesBook() {
             </div>
           )}
           <div className="fb-tickets">
-          {openShown
-            .slice()
-            .sort((a, b) => (b.datePlaced || "").localeCompare(a.datePlaced || ""))
-            .map((p) => {
+          {(() => {
+            const rows = openShown
+              .slice()
+              .sort((a, b) =>
+                sportRank(a.sport) - sportRank(b.sport) ||
+                marketType(a.market).localeCompare(marketType(b.market)) ||
+                (b.datePlaced || "").localeCompare(a.datePlaced || ""));
+            return rows.map((p, rowIdx) => {
+              const sportHead = rowIdx === 0 || rows[rowIdx - 1].sport !== p.sport ? p.sport : null;
               const edge = edges[p.id];
               const lean = edge && edge.text ? leanTag(edge.text) : null;
               const isSettling = settling && settling.id === p.id;
@@ -1378,7 +1389,9 @@ export default function FuturesBook() {
                 .sort((a, b) => (a.datePlaced || "").localeCompare(b.datePlaced || "") || a.id.localeCompare(b.id));
               const legStr = legMates.length > 1 ? ` · leg ${legMates.findIndex((x) => x.id === p.id) + 1} of ${legMates.length}` : "";
               return (
-                <article className="ticket" key={p.id}>
+                <React.Fragment key={p.id}>
+                {sportHead && <div className="fb-sport-head">{sportHead}</div>}
+                <article className="ticket">
                   <div className="ticket-body">
                     <div className="ticket-top">
                       <span className="ticket-market">{p.market || p.sport}</span>
@@ -1465,8 +1478,10 @@ export default function FuturesBook() {
                     <div className="stub-date">{p.datePlaced}</div>
                   </div>
                 </article>
+                </React.Fragment>
               );
-            })}
+            });
+          })()}
           </div>
         </section>
       )}
@@ -1483,8 +1498,9 @@ export default function FuturesBook() {
           {openGroupList.length > 0 && (
             <>
               <h3 className="fb-section-title">Open markets</h3>
-              {openGroupList.map(([k, openRows, settledRows]) => {
+              {openGroupList.map(([k, openRows, settledRows], gi) => {
                 const p0 = openRows[0];
+                const sportHead = gi === 0 || openGroupList[gi - 1][1][0].sport !== p0.sport ? p0.sport : null;
                 const staked = openRows.reduce((s, p) => s + p.stake, 0);
                 const bySel = {};
                 openRows.forEach((p) => {
@@ -1499,7 +1515,9 @@ export default function FuturesBook() {
                   (a, b) => a.selection.localeCompare(b.selection) || (a.datePlaced || "").localeCompare(b.datePlaced || "") || a.id.localeCompare(b.id)
                 );
                 return (
-                  <div className="mkt-card" key={k}>
+                  <React.Fragment key={k}>
+                  {sportHead && <div className="fb-sport-head">{sportHead}</div>}
+                  <div className="mkt-card">
                     <div className="mkt-head">
                       <div>
                         <div className="mkt-title">{marketType(p0.market)} · {p0.season}</div>
@@ -1584,6 +1602,7 @@ export default function FuturesBook() {
                       </div>
                     )}
                   </div>
+                  </React.Fragment>
                 );
               })}
             </>
@@ -1592,8 +1611,9 @@ export default function FuturesBook() {
           {settledGroupList.length > 0 && (
             <>
               <h3 className="fb-section-title">Settled markets</h3>
-              {settledGroupList.map(([k, rows]) => {
+              {settledGroupList.map(([k, rows], gi) => {
                 const p0 = rows[0];
+                const sportHead = gi === 0 || settledGroupList[gi - 1][1][0].sport !== p0.sport ? p0.sport : null;
                 const w = rows.filter((p) => p.status === "won").length;
                 const l = rows.filter((p) => p.status === "lost").length;
                 const c = rows.filter((p) => p.status === "cashout").length;
@@ -1601,7 +1621,9 @@ export default function FuturesBook() {
                 const net = rows.reduce((s, p) => s + netOf(p), 0);
                 const roi = staked ? (net / staked) * 100 : 0;
                 return (
-                  <div className="mkt-row" key={k}>
+                  <React.Fragment key={k}>
+                  {sportHead && <div className="fb-sport-head">{sportHead}</div>}
+                  <div className="mkt-row">
                     <span className="mkt-row-name">
                       {marketType(p0.market)} · {p0.season}
                       <em>{p0.market}</em>
@@ -1611,6 +1633,7 @@ export default function FuturesBook() {
                     <span className={"mono " + (net >= 0 ? "win" : "loss")}>{fmtMoney(net, true)}</span>
                     <span className={"mono " + (net >= 0 ? "win" : "loss")}>{roi.toFixed(0)}%</span>
                   </div>
+                  </React.Fragment>
                 );
               })}
             </>
@@ -1777,6 +1800,10 @@ function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType }) {
 /* ---------- styles ---------- */
 
 const css = `
+/* sport section headers */
+.fb-sport-head { font-family: 'Barlow Condensed'; font-weight: 700; font-size: 15px; letter-spacing: 5px; text-transform: uppercase; color: var(--brass); margin: 20px 0 8px; padding-bottom: 4px; border-bottom: 1px solid rgba(217,164,65,0.3); }
+.fb-tickets .fb-sport-head:first-child, section .fb-sport-head:first-of-type { margin-top: 6px; }
+
 /* live odds */
 .fb-liveband { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
 .stub-live span { font-size: 13px; }
