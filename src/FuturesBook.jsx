@@ -162,6 +162,19 @@ async function callClaude(body) {
 const textOf = (data) =>
   (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
 
+/* Checks must read like a quote board. Strip any narration the model
+   sneaks in: keep only board lines, the verdict word, and honest misses. */
+function boardOnly(raw) {
+  const lines = String(raw || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const kept = lines.filter(
+    (l) =>
+      /:.*[+-]\d{3}/.test(l) ||            // "Name: FanDuel +12000 · ..."
+      /^(HOLD|TRIM|SELL)$/.test(l) ||
+      /no board found/i.test(l)
+  );
+  return kept.length ? kept.join("\n") : String(raw || "").trim();
+}
+
 /* Prep any screenshot for the API without trusting the browser's decoder or the file's
    MIME label (iOS pickers often hand over files with a blank or wrong type).
    1) Read raw bytes, sniff the real format from magic numbers.
@@ -403,10 +416,11 @@ No sentences, no advice, no explanations, no markdown.`;
   const data = await callClaude({
     model: "claude-haiku-4-5",
     max_tokens: 400,
+    system: "You print sportsbook quote boards. Output ONLY the board lines and the final verdict word. Never narrate what you are doing, never describe your search, never explain, never apologize.",
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
   });
-  return textOf(data);
+  return boardOnly(textOf(data));
 }
 
 async function edgeCheck(p, splitLegs) {
@@ -422,10 +436,11 @@ No sentences, no advice, no markdown.`;
   const data = await callClaude({
     model: "claude-haiku-4-5",
     max_tokens: 250,
+    system: "You print sportsbook quote boards. Output ONLY the board line and the final verdict word. Never narrate what you are doing, never describe your search, never explain, never apologize.",
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
   });
-  return textOf(data);
+  return boardOnly(textOf(data));
 }
 
 /* ---------- blank draft ---------- */
