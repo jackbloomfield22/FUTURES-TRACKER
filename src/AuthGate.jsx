@@ -13,8 +13,14 @@ async function migrateDeviceBook(remote) {
      so nothing is lost. Cloud data wins if it already exists. */
   try {
     const existing = await remote.get(LEDGER_KEY);
+    const cloudHasPlays = (() => {
+      try {
+        const v = existing && existing.value ? JSON.parse(existing.value) : null;
+        return !!(v && Array.isArray(v.positions) && v.positions.length > 0);
+      } catch (e) { return false; }
+    })();
     const local = await deviceStore.get(LEDGER_KEY);
-    if (!existing && local && local.value) {
+    if (!cloudHasPlays && local && local.value) {
       await remote.set(LEDGER_KEY, local.value);
       const slips = await deviceStore.list("slip:");
       for (const k of (slips.keys || []).slice(0, 40)) {

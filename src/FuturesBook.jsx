@@ -533,13 +533,10 @@ export default function FuturesBook() {
         const stored = r && r.value ? JSON.parse(r.value).positions || [] : [];
         finish(stored, "ok");
       } catch (e) {
-        // key may simply not exist yet; probe with a write to find out
-        try {
-          await store.set(STORAGE_KEY, JSON.stringify({ positions: [] }));
-          finish([], "ok");
-        } catch (e2) {
-          finish([], "unavailable");
-        }
+        /* A failed read is NOT an empty book. Never write here: writing an
+           empty ledger over a real one on a transient error is how books die.
+           Run read-only until a reload gets a clean read. */
+        finish([], "unavailable");
       }
     })();
   }, []);
@@ -548,13 +545,14 @@ export default function FuturesBook() {
     setPositions(next);
     setDirty((d) => d + 1);
     try {
+      if (storageStatus !== "ok") throw new Error("storage unverified, not writing");
       if (!(store && store.set)) throw new Error("no storage");
       const res = await store.set(STORAGE_KEY, JSON.stringify({ positions: next }));
       if (!res) throw new Error("save failed");
     } catch (e) {
       setStorageStatus("unavailable");
     }
-  }, []);
+  }, [storageStatus]);
 
   /* image intake */
   /* skip drafts that exactly match a ticket already in the book */
@@ -686,6 +684,78 @@ export default function FuturesBook() {
   useEffect(() => {
     if (view === "slips" && slips === null) loadSlips();
   }, [view, slips, loadSlips]);
+
+  /* recovery: re-parse every archived slip back into the verify queue.
+     The archive survives ledger loss, so the book can always be rebuilt
+     from its own receipts. One AI parse per slip. */
+  const rebuildFromSlips = useCallback(async () => {
+    setParsing(true);
+    setParseErr("");
+    setView("add");
+    let items = slips;
+    if (!items) {
+      try {
+        const r = await store.list("slip:");
+        const keys = (r && r.keys) || [];
+        items = [];
+        for (const key of keys) {
+          try {
+            const g = await store.get(key);
+            if (g && g.value) {
+              const rec = JSON.parse(g.value);
+              if (rec && rec.img) items.push({ key, img: rec.img, ts: rec.ts, caption: rec.caption });
+            }
+          } catch (e) { /* skip broken record */ }
+        }
+      } catch (e) {
+        setParsing(false);
+        setParseErr("Couldn't read the slip archive (" + (e.message || "error") + "). Reload and try again.");
+        return;
+      }
+    }
+    if (!items.length) {
+      setParsing(false);
+      setParseErr("No slips in the archive to rebuild from.");
+      return;
+    }
+    setBatch({ done: 0, total: items.length, found: 0, failed: [] });
+    const allFresh = [];
+    const failed = [];
+    let skippedTotal = 0;
+    const seen = new Set(positions.map(fp));
+    for (let i = 0; i < items.length; i++) {
+      try {
+        const img = items[i].img || "";
+        const m = img.match(/^data:([^;]+);base64,(.*)$/s);
+        if (!m) throw new Error("stored image unreadable");
+        const tickets = await parseSlip(m[2], m[1]);
+        if (!tickets.length) throw new Error("no bets found");
+        for (const t of tickets) {
+          const d = ticketToDraft(t, img);
+          const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced };
+          const print = fp(cand);
+          if (seen.has(print)) { skippedTotal++; continue; }
+          seen.add(print);
+          allFresh.push(d);
+        }
+      } catch (e) {
+        failed.push((items[i].caption || "slip " + (i + 1)) + ": " + (e.message || "error"));
+      }
+      setBatch({ done: i + 1, total: items.length, found: allFresh.length, failed: failed.slice() });
+    }
+    setBatch(null);
+    const notes = [];
+    if (skippedTotal) notes.push(skippedTotal + " already in the book, skipped");
+    if (failed.length) notes.push("couldn't re-read " + failed.length + " (" + failed.join(" · ") + ")");
+    if (!allFresh.length) {
+      setParseErr(notes.length ? notes.join(". ") + "." : "Nothing new came out of the archive.");
+    } else {
+      setDraft(allFresh[0]);
+      setQueue(allFresh.slice(1));
+      setParseErr(notes.length ? notes.join(". ") + "." : "");
+    }
+    setParsing(false);
+  }, [slips, positions]);
 
   /* backup: export the whole book as a code; restore merges by ticket id */
   const exportBook = () => {
@@ -1644,6 +1714,15 @@ export default function FuturesBook() {
       {/* ============ SLIPS ============ */}
       {loaded && view === "slips" && (
         <section>
+          {slips && slips.length > 0 && (
+            <div className="fb-liveband">
+              <button className="fb-btn small" onClick={rebuildFromSlips} disabled={parsing}
+                title="Re-reads every archived screenshot and queues any bet that isn't in the book, for you to verify one by one. One AI parse per slip.">
+                Rebuild book from these slips
+              </button>
+              <span className="fb-dim">Lost tickets? The archive is the receipt: this re-parses every slip and queues what's missing.</span>
+            </div>
+          )}
           {slips === null && <div className="fb-empty">Loading your slip archive…</div>}
           {slips && slips.length === 0 && (
             <div className="fb-empty">
