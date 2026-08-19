@@ -1110,7 +1110,7 @@ export default function FuturesBook() {
             <span>{open.length}</span>
           </div>
           <div className="fb-board-cell">
-            <label>At risk</label>
+            <label>Risk</label>
             <span>{fmtMoney(atRisk)}</span>
           </div>
           <div className="fb-board-cell">
