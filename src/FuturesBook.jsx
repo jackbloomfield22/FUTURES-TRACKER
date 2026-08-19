@@ -5,7 +5,7 @@ import { getSession } from "./lib/cloud.js";
 
 /* FUTURES BOOK — personal futures ticket ledger
    - Screenshot a slip, Claude parses it into a ticket
-   - Edge Check: live web search for current odds + hold/sell read
+   - Edge Check: live web search for current odds + value % vs entry (a read, not advice)
    - Season history with W/L/CO records, net P/L, ROI
    - Persists via store
 */
@@ -94,6 +94,25 @@ const marketKey = (p) => p.sport + "|" + marketType(p.market) + "|" + (p.season 
 const sameSel = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
 const fp = (p) => [p.book, p.selection, p.market, p.odds, p.stake, p.datePlaced].join("|").toLowerCase();
 
+/* Duplicate detection, with Bet IDs as the truth when present: the same ID is the
+   same bet; different IDs are different bets even when every other field matches
+   (two identical $10 MVP slips). Value fingerprints decide only when a side has
+   no ID, so legacy tickets and ID-less slips still dedupe as before. */
+function makeDupeCheck(existingList) {
+  const normId = (v) => String(v).trim().toLowerCase();
+  const ids = new Set();
+  const printsNoId = new Set();
+  const printsAll = new Set();
+  const add = (c) => {
+    if (c.betId) ids.add(normId(c.betId));
+    else printsNoId.add(fp(c));
+    printsAll.add(fp(c));
+  };
+  (existingList || []).forEach(add);
+  const isDupe = (c) => (c.betId ? ids.has(normId(c.betId)) || printsNoId.has(fp(c)) : printsAll.has(fp(c)));
+  return { isDupe, add };
+}
+
 /* SEED: the book baked into the app itself, so a storage wipe can't lose it.
    To update: Export from the Backup section, paste the code to Claude in chat,
    and Claude rebuilds the app with the new state embedded here. */
@@ -164,13 +183,12 @@ const textOf = (data) =>
   (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
 
 /* Checks must read like a quote board. Strip any narration the model
-   sneaks in: keep only board lines, the verdict word, and honest misses. */
+   sneaks in: keep only board lines and honest misses. */
 function boardOnly(raw) {
   const lines = String(raw || "").split("\n").map((l) => l.trim()).filter(Boolean);
   const kept = lines.filter(
     (l) =>
       /:.*[+-]\d{3}/.test(l) ||            // "Name: FanDuel +12000 · ..."
-      /^(HOLD|TRIM|SELL)$/.test(l) ||
       /no board found/i.test(l)
   );
   return kept.length ? kept.join("\n") : String(raw || "").trim();
@@ -317,13 +335,15 @@ For each bet, find:
 - date_placed: "YYYY-MM-DD" if visible, else null.
 - status: "open", "won", "lost", or "cashout" if determinable from the UI (settled lists usually mark these), else null.
 - returned: for settled bets, total dollars paid back (0 if lost, cash-out amount if cashed out), else null.
+- bet_id: the Bet ID / Ticket # / Receipt number printed on the slip, as a string exactly as shown; null if not visible.
 - notes: boosts, promos, free bet, odds movement, or anything notable; else null.
 
 Respond with ONLY raw JSON. No markdown fences, no commentary. Exactly this shape:
-{"tickets":[{"book":"DraftKings","sport":"MLB","market":"AL Cy Young","selection":"George Kirby","odds":"+2000","stake":25,"to_win":500,"date_placed":null,"status":"open","returned":null,"notes":null}]}
+{"tickets":[{"book":"DraftKings","sport":"MLB","market":"AL Cy Young","selection":"George Kirby","odds":"+2000","stake":25,"to_win":500,"date_placed":null,"status":"open","returned":null,"bet_id":"ABC123456","notes":null}]}
 
 Rules:
 - One entry per bet. A parlay is ONE ticket: market "Parlay", selection summarizes the legs.
+- Almost every book prints a Bet ID on each slip; read each one carefully. Slips that look identical (same selection, odds, stake) but carry different bet IDs are SEPARATE bets: output one entry for each. Never merge duplicate-looking slips into one entry.
 - Numbers as numbers, odds as a string.
 - Use null for anything not visible. Never invent values; read exactly what's on screen.`;
 
@@ -352,7 +372,7 @@ async function parseSlip(base64, mediaType) {
         {
           role: "user",
           content:
-            'Convert the following into valid JSON of exactly this shape: {"tickets":[{"book":"","sport":"","market":"","selection":"","odds":"","stake":0,"to_win":0,"date_placed":null,"status":null,"returned":null,"notes":null}]}. Reply with ONLY the JSON, nothing else:\n\n' +
+            'Convert the following into valid JSON of exactly this shape: {"tickets":[{"book":"","sport":"","market":"","selection":"","odds":"","stake":0,"to_win":0,"date_placed":null,"status":null,"returned":null,"bet_id":null,"notes":null}]}. Reply with ONLY the JSON, nothing else:\n\n' +
             raw,
         },
       ],
@@ -386,6 +406,7 @@ function ticketToDraft(j, preview) {
     datePlaced: dateP,
     season: j.season || guessSeason(sport, dateP),
     notes: j.notes || "",
+    betId: j.bet_id !== null && j.bet_id !== undefined ? String(j.bet_id).trim() : "",
     logSettled: !!st,
     result: st || "won",
     returned: st && st !== "lost" && j.returned !== null && j.returned !== undefined ? String(j.returned) : "",
@@ -412,12 +433,11 @@ Search the web for the CURRENT odds on each selection. Reply as a quote board, n
   {Selection}: FanDuel {odds} · DraftKings {odds} (entry {my odds} · value {+/-N%})
 - Quote FanDuel and DraftKings. If either doesn't list it, substitute one other major US book and name it. If nobody lists it, write "no board found".
 - "value" is the change in implied win probability vs my entry, as a percent: positive means my position gained value.
-- Last line: one word for the whole group, HOLD, TRIM, or SELL.
-No sentences, no advice, no explanations, no markdown.`;
+No sentences, no advice, no buy/sell/hold verdicts, no explanations, no markdown.`;
   const data = await callClaude({
     model: "claude-haiku-4-5",
     max_tokens: 400,
-    system: "You print sportsbook quote boards. Output ONLY the board lines and the final verdict word. Never narrate what you are doing, never describe your search, never explain, never apologize.",
+    system: "You print sportsbook quote boards. Output ONLY the board lines. Never advise, never recommend holding or selling, never narrate what you are doing, never describe your search, never explain, never apologize.",
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
   });
@@ -432,12 +452,12 @@ Note: this is one of ${splitLegs + 1} split tickets I hold on this same selectio
 
 Search the web for the CURRENT odds on this exact market and selection. Reply as a quote line, nothing else:
 {Selection}: FanDuel {odds} · DraftKings {odds} (entry ${fmtOdds(p.odds)} · value {+/-N%})
-If either book doesn't list it, substitute one other major US book and name it; if nobody lists it, write "no board found". "value" is the change in implied win probability vs my entry, positive meaning my position gained value. Then on a new line, one word: HOLD, TRIM, or SELL.
-No sentences, no advice, no markdown.`;
+If either book doesn't list it, substitute one other major US book and name it; if nobody lists it, write "no board found". "value" is the change in implied win probability vs my entry, positive meaning my position gained value.
+No sentences, no advice, no buy/sell/hold verdicts, no markdown.`;
   const data = await callClaude({
     model: "claude-haiku-4-5",
     max_tokens: 250,
-    system: "You print sportsbook quote boards. Output ONLY the board line and the final verdict word. Never narrate what you are doing, never describe your search, never explain, never apologize.",
+    system: "You print sportsbook quote boards. Output ONLY the board line. Never advise, never recommend holding or selling, never narrate what you are doing, never describe your search, never explain, never apologize.",
     messages: [{ role: "user", content: prompt }],
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
   });
@@ -456,6 +476,7 @@ const blankDraft = () => ({
   datePlaced: todayISO(),
   season: guessSeason("MLB"),
   notes: "",
+  betId: "",
   logSettled: false,
   result: "won",
   returned: "",
@@ -557,13 +578,13 @@ export default function FuturesBook() {
   /* image intake */
   /* skip drafts that exactly match a ticket already in the book */
   const dedupeDrafts = (drafts) => {
-    const existing = new Set(positions.map(fp));
+    const seen = makeDupeCheck(positions);
     const fresh = [];
     let skipped = 0;
     drafts.forEach((d) => {
-      const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced };
-      if (existing.has(fp(cand))) skipped++;
-      else fresh.push(d);
+      const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced, betId: d.betId };
+      if (seen.isDupe(cand)) skipped++;
+      else { seen.add(cand); fresh.push(d); }
     });
     return { fresh, skipped };
   };
@@ -586,7 +607,7 @@ export default function FuturesBook() {
     const failed = [];
     let skippedTotal = 0;
     let lastPreview = null;
-    const seen = new Set(positions.map(fp));
+    const seen = makeDupeCheck(positions);
 
     for (let i = 0; i < files.length; i++) {
       let preview = null;
@@ -598,10 +619,9 @@ export default function FuturesBook() {
         if (!tickets.length) throw new Error("no bets found");
         for (const t of tickets) {
           const d = ticketToDraft(t, preview);
-          const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced };
-          const print = fp(cand);
-          if (seen.has(print)) { skippedTotal++; continue; }
-          seen.add(print);
+          const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced, betId: d.betId };
+          if (seen.isDupe(cand)) { skippedTotal++; continue; }
+          seen.add(cand);
           allFresh.push(d);
         }
       } catch (e) {
@@ -722,7 +742,7 @@ export default function FuturesBook() {
     const allFresh = [];
     const failed = [];
     let skippedTotal = 0;
-    const seen = new Set(positions.map(fp));
+    const seen = makeDupeCheck(positions);
     for (let i = 0; i < items.length; i++) {
       try {
         const img = items[i].img || "";
@@ -732,10 +752,9 @@ export default function FuturesBook() {
         if (!tickets.length) throw new Error("no bets found");
         for (const t of tickets) {
           const d = ticketToDraft(t, img);
-          const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced };
-          const print = fp(cand);
-          if (seen.has(print)) { skippedTotal++; continue; }
-          seen.add(print);
+          const cand = { book: d.book, selection: d.selection, market: d.market, odds: parseOdds(d.odds), stake: parseFloat(d.stake), datePlaced: d.datePlaced, betId: d.betId };
+          if (seen.isDupe(cand)) { skippedTotal++; continue; }
+          seen.add(cand);
           allFresh.push(d);
         }
       } catch (e) {
@@ -791,6 +810,7 @@ export default function FuturesBook() {
           datePlaced: p.datePlaced || todayISO(),
           season: p.season || guessSeason(p.sport, p.datePlaced),
           notes: p.notes || "",
+          betId: p.betId ? String(p.betId) : "",
           status: ["open", "won", "lost", "cashout"].includes(p.status) ? p.status : "open",
           returned: p.returned === null || p.returned === undefined ? null : Number(p.returned),
           dateSettled: p.dateSettled || null,
@@ -844,7 +864,7 @@ export default function FuturesBook() {
       persist(
         positions.map((p) =>
           p.id === draft.editingId
-            ? { ...p, book: draft.book.trim(), sport: draft.sport, market: draft.market.trim(), selection: draft.selection.trim(), odds, stake, datePlaced: draft.datePlaced, season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced), notes: draft.notes.trim() }
+            ? { ...p, book: draft.book.trim(), sport: draft.sport, market: draft.market.trim(), selection: draft.selection.trim(), odds, stake, datePlaced: draft.datePlaced, season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced), notes: draft.notes.trim(), betId: (draft.betId || "").trim() }
             : p
         )
       );
@@ -863,6 +883,7 @@ export default function FuturesBook() {
       datePlaced: draft.datePlaced,
       season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced),
       notes: draft.notes.trim(),
+      betId: (draft.betId || "").trim(),
       status: "open",
       returned: null,
       dateSettled: null,
@@ -878,6 +899,8 @@ export default function FuturesBook() {
           : parseFloat(draft.returned || 0);
     }
     persist([base, ...positions]);
+    setUndoSnap(positions);
+    setCascadeNote("Added to the book: " + base.selection + " · " + (base.market || base.sport) + ".");
     if (draft.preview) {
       const caption = base.selection + " · " + base.market + (base.book ? " · " + base.book : "");
       shrinkDataUrl(draft.preview)
@@ -932,12 +955,16 @@ export default function FuturesBook() {
     }
     persist(next);
     setSettling(null);
-    setCascadeNote(note);
-    setUndoSnap(note ? positions : null);
+    const word = status === "won" ? "won" : status === "lost" ? "lost" : "cashed out";
+    setCascadeNote(note || "Settled: " + t.selection + " " + word + ".");
+    setUndoSnap(positions);
   };
 
   const removeTicket = (id) => {
+    const t = positions.find((p) => p.id === id);
     persist(positions.filter((p) => p.id !== id));
+    setUndoSnap(positions);
+    setCascadeNote("Removed " + (t ? t.selection + " · " + (t.market || t.sport) : "ticket") + " from the book.");
     try {
       const r = store.delete("slip:" + id);
       if (r && r.catch) r.catch(() => {});
@@ -962,6 +989,7 @@ export default function FuturesBook() {
       datePlaced: p.datePlaced || todayISO(),
       season: p.season || "",
       notes: p.notes || "",
+      betId: p.betId || "",
     });
     setView("add");
   };
@@ -1085,12 +1113,6 @@ export default function FuturesBook() {
       const last = (rows) => rows.map((p) => p.dateSettled || "").sort().pop() || "";
       return last(b[1]).localeCompare(last(a[1]));
     });
-
-  const leanTag = (text) => {
-    if (!text) return null;
-    const m = text.match(/\b(HOLD|TRIM|SELL)\b(?!.*\b(HOLD|TRIM|SELL)\b)/s);
-    return m ? m[1] : null;
-  };
 
   /* ---------- render ---------- */
 
@@ -1347,6 +1369,9 @@ export default function FuturesBook() {
                 <Field label="Season">
                   <input value={draft.season} onChange={(e) => setDraft({ ...draft, season: e.target.value })} placeholder="2026 MLB" />
                 </Field>
+                <Field label="Bet ID">
+                  <input value={draft.betId || ""} onChange={(e) => setDraft({ ...draft, betId: e.target.value })} placeholder="from the slip, if shown" />
+                </Field>
                 <Field label="Notes" wide>
                   <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Boost, promo, reasoning…" />
                 </Field>
@@ -1395,7 +1420,14 @@ export default function FuturesBook() {
               )}
 
               <div className="fb-row">
-                <button className="fb-btn" onClick={saveDraft}>{draft.editingId ? "Save changes" : "Add to the book"}</button>
+                {(() => {
+                  const ok = !!draft.selection.trim() && parseOdds(draft.odds) !== null && Number.isFinite(parseFloat(draft.stake));
+                  return (
+                    <button className="fb-btn" onClick={saveDraft} disabled={!ok} title={ok ? undefined : "Needs a selection, odds, and a stake before it can go in the book."}>
+                      {draft.editingId ? "Save changes" : "Add to the book"}
+                    </button>
+                  );
+                })()}
                 <button
                   className="fb-btn ghost"
                   onClick={() => {
@@ -1452,7 +1484,6 @@ export default function FuturesBook() {
             return rows.map((p, rowIdx) => {
               const sportHead = rowIdx === 0 || rows[rowIdx - 1].sport !== p.sport ? p.sport : null;
               const edge = edges[p.id];
-              const lean = edge && edge.text ? leanTag(edge.text) : null;
               const isSettling = settling && settling.id === p.id;
               const legMates = open
                 .filter((x) => marketKey(x) === marketKey(p) && sameSel(x.selection, p.selection))
@@ -1465,7 +1496,7 @@ export default function FuturesBook() {
                   <div className="ticket-body">
                     <div className="ticket-top">
                       <span className="ticket-market">{p.market || p.sport}</span>
-                      <span className="ticket-meta">{p.book || "—"} · {p.season}{legStr}</span>
+                      <span className="ticket-meta">{p.book || "—"} · {p.season}{legStr}{p.betId ? " · #" + p.betId : ""}</span>
                     </div>
                     <div className="ticket-selection">{p.selection}</div>
                     {p.notes && <div className="ticket-notes">{p.notes}</div>}
@@ -1474,12 +1505,7 @@ export default function FuturesBook() {
                       <div className="ticket-edge">
                         {edge.loading && <span className="fb-dim">Checking current market…</span>}
                         {edge.err && <span className="fb-err">{edge.err}</span>}
-                        {edge.text && (
-                          <>
-                            {lean && <span className={"lean lean-" + lean.toLowerCase()}>{lean}</span>}
-                            <p>{edge.text}</p>
-                          </>
-                        )}
+                        {edge.text && <p>{edge.text}</p>}
                       </div>
                     )}
 
@@ -1513,7 +1539,7 @@ export default function FuturesBook() {
                       </div>
                     ) : (
                       <div className="ticket-actions">
-                        <button className="fb-btn small" onClick={() => runEdge(p)} disabled={edge && edge.loading} title="Quotes current FanDuel and DraftKings odds on this pick, with value change vs your entry, stamped HOLD / TRIM / SELL.">
+                        <button className="fb-btn small" onClick={() => runEdge(p)} disabled={edge && edge.loading} title="Quotes current FanDuel and DraftKings odds on this pick, with the % change in implied win probability vs your entry. Just the board, no advice.">
                           {edge && edge.loading ? "Checking…" : "Edge check"}
                         </button>
                         <button className="fb-btn ghost small" onClick={() => setSettling({ id: p.id, mode: "grade" })}>Settle</button>
@@ -1580,7 +1606,6 @@ export default function FuturesBook() {
                 const realized = settledRows.reduce((s, p) => s + netOf(p), 0);
                 const coCount = settledRows.filter((p) => p.status === "cashout").length;
                 const mc = marketChecks[k];
-                const lean = mc && mc.text ? (mc.text.match(/\b(HOLD|TRIM|SELL)\b(?!.*\b(HOLD|TRIM|SELL)\b)/s) || [])[1] : null;
                 const sorted = openRows.slice().sort(
                   (a, b) => a.selection.localeCompare(b.selection) || (a.datePlaced || "").localeCompare(b.datePlaced || "") || a.id.localeCompare(b.id)
                 );
@@ -1593,7 +1618,7 @@ export default function FuturesBook() {
                         <div className="mkt-title">{marketType(p0.market)} · {p0.season}</div>
                         <div className="mkt-sub">{p0.market} · {openRows.length} open leg{openRows.length > 1 ? "s" : ""}</div>
                       </div>
-                      <button className="fb-btn small" onClick={() => runMarketCheck(k, openRows, settledRows)} disabled={mc && mc.loading} title="Quotes current FanDuel and DraftKings odds on every selection you hold here, with value change vs your entry.">
+                      <button className="fb-btn small" onClick={() => runMarketCheck(k, openRows, settledRows)} disabled={mc && mc.loading} title="Quotes current FanDuel and DraftKings odds on every selection you hold here, with the % change in implied win probability vs your entry. Just the board, no advice.">
                         {mc && mc.loading ? "Checking…" : "Market check"}
                       </button>
                     </div>
@@ -1663,12 +1688,7 @@ export default function FuturesBook() {
                       <div className="mkt-edge">
                         {mc.loading && <span className="fb-dim-dark">Searching current odds for every selection…</span>}
                         {mc.err && <span className="fb-err">{mc.err}</span>}
-                        {mc.text && (
-                          <>
-                            {lean && <span className={"lean lean-" + lean.toLowerCase()}>{lean}</span>}
-                            <p>{mc.text}</p>
-                          </>
-                        )}
+                        {mc.text && <p>{mc.text}</p>}
                       </div>
                     )}
                   </div>
@@ -1885,6 +1905,7 @@ const css = `
 
 /* live odds */
 .fb-liveband { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
+.fb-liveband .fb-dim { color: rgba(245,241,228,0.6); }
 .stub-live span { font-size: 13px; }
 .stub-live.steam span { color: var(--win-ink); }
 .stub-live.drift span { color: var(--loss-ink); }
@@ -1917,6 +1938,14 @@ const css = `
 .fb-root * { box-sizing: border-box; }
 .fb-root button { font-family: inherit; cursor: pointer; }
 .fb-root :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.fb-btn, .fb-tab, .fb-chip, .fb-link { transition: filter 0.15s, border-color 0.15s, background 0.15s, color 0.15s, transform 0.05s; }
+.fb-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.fb-btn:active:not(:disabled) { transform: translateY(1px); }
+.fb-btn.ghost:hover:not(:disabled) { opacity: 1; border-color: var(--brass); color: var(--brass); }
+.fb-tab:hover:not(.active) { border-color: rgba(245,241,228,0.6); }
+.fb-chip:hover:not(.active) { border-color: rgba(245,241,228,0.7); color: var(--paper); }
+.fb-link:hover { filter: brightness(1.2); }
+@media (prefers-reduced-motion: reduce) { .fb-btn, .fb-tab, .fb-chip, .fb-link { transition: none; } }
 
 /* header */
 .fb-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -2048,10 +2077,6 @@ const css = `
 .ticket-settle input { width: 160px; }
 .ticket-edge { margin-top: 10px; background: #ece6d3; border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.45; }
 .ticket-edge p { margin: 6px 0 0; white-space: pre-wrap; }
-.lean { font-family: 'IBM Plex Mono'; font-size: 11px; font-weight: 600; letter-spacing: 2px; padding: 2px 8px; border-radius: 3px; }
-.lean-hold { background: var(--win-ink); color: #fff; }
-.lean-trim { background: #a87b1e; color: #fff; }
-.lean-sell { background: var(--loss-ink); color: #fff; }
 
 .ticket-stub {
   width: 132px; flex-shrink: 0; padding: 14px 12px; text-align: right;
