@@ -1899,7 +1899,7 @@ const css = `
   --paper-dim: #e9e3d0;
   --ink: #1d1f1b;
   --ink-soft: #5a5c52;
-  --brass: #d9a441;
+  --brass: #e0b04a;
   --win: #2e9e64;
   --win-ink: #0f7b45;
   --loss: #c65340;
