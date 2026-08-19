@@ -1852,43 +1852,53 @@ function Field({ label, children, wide }) {
   );
 }
 
-function Chip({ label, active, onClick }) {
+function Chip({ label, active, onClick, title }) {
   return (
-    <button className={"fb-chip" + (active ? " active" : "")} onClick={onClick}>{label}</button>
+    <button className={"fb-chip" + (active ? " active" : "")} onClick={onClick} title={title}>{label}</button>
   );
 }
 
 /* League + bet-type chips derived live from the tickets in view.
+   Two-step filter: pick a league first, then the market row appears showing
+   only that league's markets (with counts scoped to it). Switching leagues
+   resets the market pick so a hidden stale filter can never blank the list.
    Tapping an active chip clears it. New leagues/types show up automatically. */
 function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType }) {
   if (!tickets.length) return null;
   const sportOrder = ["MLB", "NBA", "NFL", "NHL", "Soccer", "Golf", "Tennis", "Other"];
   const idx = (s) => { const i = sportOrder.indexOf(s); return i === -1 ? 99 : i; };
   const sportCounts = {};
+  tickets.forEach((t) => { sportCounts[t.sport] = (sportCounts[t.sport] || 0) + 1; });
+  const sports = Object.keys(sportCounts).sort((a, b) => idx(a) - idx(b));
+  /* a one-league book skips the league step entirely */
+  const effSport = sports.length === 1 ? sports[0] : sportFilter;
   const typeCounts = {};
   tickets.forEach((t) => {
-    sportCounts[t.sport] = (sportCounts[t.sport] || 0) + 1;
+    if (effSport !== "all" && t.sport !== effSport) return;
     const k = marketType(t.market);
     typeCounts[k] = (typeCounts[k] || 0) + 1;
   });
-  const sports = Object.keys(sportCounts).sort((a, b) => idx(a) - idx(b));
   const types = Object.keys(typeCounts).sort((a, b) => typeCounts[b] - typeCounts[a] || a.localeCompare(b));
+  const pickSport = (s) => { onSport(s); onType("all"); };
   if (sports.length < 2 && types.length < 2) return null;
   return (
     <div className="fb-filters">
       {sports.length > 1 && (
         <div className="fb-chip-row">
-          <Chip label="All leagues" active={sportFilter === "all"} onClick={() => onSport("all")} />
+          <span className="fb-chip-label">League</span>
+          <Chip label={`All · ${tickets.length}`} active={sportFilter === "all"} onClick={() => pickSport("all")} />
           {sports.map((s) => (
-            <Chip key={s} label={`${s} · ${sportCounts[s]}`} active={sportFilter === s} onClick={() => onSport(sportFilter === s ? "all" : s)} />
+            <Chip key={s} label={`${s} · ${sportCounts[s]}`} active={sportFilter === s} onClick={() => pickSport(sportFilter === s ? "all" : s)} />
           ))}
+          {effSport === "all" && <span className="fb-filter-hint">pick a league to filter its markets</span>}
         </div>
       )}
-      {types.length > 1 && (
+      {effSport !== "all" && types.length > 1 && (
         <div className="fb-chip-row">
-          <Chip label="All markets" active={typeFilter === "all"} onClick={() => onType("all")} />
+          <span className="fb-chip-label">Market</span>
+          <Chip label={`All · ${Object.values(typeCounts).reduce((a, b) => a + b, 0)}`} active={typeFilter === "all"} onClick={() => onType("all")} />
           {types.map((t) => (
-            <Chip key={t} label={`${t} · ${typeCounts[t]}`} active={typeFilter === t} onClick={() => onType(typeFilter === t ? "all" : t)} />
+            <Chip key={t} label={`${t} · ${typeCounts[t]}`} title={t} active={typeFilter === t} onClick={() => onType(typeFilter === t ? "all" : t)} />
           ))}
         </div>
       )}
@@ -2060,8 +2070,10 @@ const css = `
 
 /* filter chips */
 .fb-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-.fb-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.fb-chip { background: transparent; border: 1px solid rgba(245,241,228,0.25); color: rgba(245,241,228,0.85); padding: 4px 12px; border-radius: 999px; font-size: 12px; }
+.fb-chip-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.fb-chip { background: transparent; border: 1px solid rgba(245,241,228,0.25); color: rgba(245,241,228,0.85); padding: 4px 12px; border-radius: 999px; font-size: 12px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-chip-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(245,241,228,0.45); align-self: center; min-width: 48px; }
+.fb-filter-hint { font-size: 12px; color: rgba(245,241,228,0.45); align-self: center; font-style: italic; }
 .fb-chip.active { background: var(--brass); border-color: var(--brass); color: var(--ink); font-weight: 600; }
 
 /* tickets */
