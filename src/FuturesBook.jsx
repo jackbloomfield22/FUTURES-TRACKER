@@ -69,8 +69,11 @@ const TYPE_PATTERNS = [
   ["ROY", /\broy\b|rookie of the year/i],
   ["MIP", /\bmip\b|most improved/i],
   ["6th Man", /sixth man|6th man/i],
+  ["Comeback of the Year", /comeback/i],
+  ["Heisman", /heisman/i],
   ["Coach of the Year", /\bcoy\b|coach of the year|manager of the year/i],
   ["Win Total", /win total|regular season wins|season wins/i],
+  ["College Football Playoff", /college football playoff|\bcfp\b/i],
   ["Playoffs", /to make the playoffs|playoff berth/i],
   ["Division", /division (winner|champion)|to win the \w+ (east|west|north|south|central)/i],
   ["Conference", /conference (winner|champion)|pennant|\b(afc|nfc|al|nl) champion/i],
@@ -78,14 +81,41 @@ const TYPE_PATTERNS = [
   ["Stat Leader", /\bleader\b|most (home runs|touchdowns|points|assists|rebounds|strikeouts|sacks|goals)/i],
 ];
 function marketType(market) {
-  const m = market || "";
-  for (const [label, re] of TYPE_PATTERNS) if (re.test(m)) return label;
-  const cleaned = m
-    .replace(/\b(19|20)\d{2}(\s*[\/\-\u2013]\s*(19|20)?\d{2})?\b/g, "")
+  const raw = market || "";
+  for (const [label, re] of TYPE_PATTERNS) if (re.test(raw)) return label;
+  /* Unrecognized market: normalize hard so every spelling of the same market
+     lands on one label. Strip parentheticals, years, league tags, and
+     "reg. season" qualifiers, then re-try the patterns on the cleaned form. */
+  let m = raw
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(19|20)\d{2}(\s*[\/\-\u2013]\s*(19|20)?\d{2})?\b/g, " ")
+    .replace(/['\u2019]\d{2}\b/g, " ")
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\b(reg\.?|regular)\s+season\b/gi, " ")
+    .replace(/\b(nfl|nba|mlb|nhl|ncaaf?b?)\b/gi, " ")
     .replace(/\s+/g, " ")
-    .replace(/^[\s\-\u00b7:]+|[\s\-\u00b7:]+$/g, "")
     .trim();
-  return cleaned || "Other";
+  for (const [label, re] of TYPE_PATTERNS) if (re.test(m)) return label;
+  /* Any "<X> Player/Rookie/... of the Year" award is the same market as
+     "<X> of the Year" -- books word these interchangeably. */
+  const award = m.match(/^(.+?)\s+(?:player|pitcher|rookie|back|lineman|man)\s+of the year\b/i);
+  if (award) m = award[1] + " of the Year";
+  m = m
+    .replace(/^\s*the\s+/i, "")
+    .replace(/\b(winner|award|trophy)\s*$/i, "")
+    .replace(/[.,]/g, "")
+    .replace(/^[\s\-\u00b7:]+|[\s\-\u00b7:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!m) return "Other";
+  /* Case-fold to one canonical label; short all-caps words stay as acronyms. */
+  return m
+    .split(" ")
+    .map((w, i) =>
+      i > 0 && /^(of|the|to|a|an|in|for|at|on)$/i.test(w) ? w.toLowerCase()
+      : /^[A-Z0-9+\/]{2,4}$/.test(w) ? w
+      : w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
 }
 
 /* Tickets in the same market are mutually exclusive (one MVP per season),
