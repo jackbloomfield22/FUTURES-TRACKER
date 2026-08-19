@@ -188,7 +188,7 @@ body { background: #0c231c; margin: 0; }
   font-family: 'Barlow', system-ui, sans-serif;
 }
 .gate-checking {
-  color: #d9a441; font-family: 'Barlow Condensed', sans-serif;
+  color: #d9a845; font-family: 'Barlow Condensed', sans-serif;
   font-weight: 700; font-size: 28px; letter-spacing: 6px;
   animation: gatePulse 1.2s ease-in-out infinite alternate;
 }
@@ -204,7 +204,7 @@ body { background: #0c231c; margin: 0; }
 }
 .gate-card::before {
   content: ""; position: absolute; left: 14px; right: 14px; top: 0;
-  height: 4px; background: repeating-linear-gradient(90deg, #d9a441 0 14px, transparent 14px 22px);
+  height: 4px; background: repeating-linear-gradient(90deg, #d9a845 0 14px, transparent 14px 22px);
   border-radius: 0 0 3px 3px;
 }
 .gate-brand { line-height: 0.9; margin-bottom: 4px; }
@@ -228,7 +228,7 @@ body { background: #0c231c; margin: 0; }
   width: 100%; padding: 10px 12px; border: 1px solid rgba(29,31,27,0.3); border-radius: 6px;
   background: #fffdf6; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #1d1f1b;
 }
-.gate-field input:focus-visible { outline: 2px solid #d9a441; outline-offset: 1px; }
+.gate-field input:focus-visible { outline: 2px solid #d9a845; outline-offset: 1px; }
 .gate-err { color: #b3402f; font-size: 13px; margin: 2px 0 10px; }
 .gate-go {
   width: 100%; padding: 12px; border: none; border-radius: 6px; cursor: pointer;
@@ -236,7 +236,7 @@ body { background: #0c231c; margin: 0; }
   font-size: 18px; letter-spacing: 2px; text-transform: uppercase;
 }
 .gate-go:disabled { opacity: 0.5; cursor: default; }
-.gate-go:focus-visible { outline: 2px solid #d9a441; outline-offset: 2px; }
+.gate-go:focus-visible { outline: 2px solid #d9a845; outline-offset: 2px; }
 .gate-note { font-size: 12px; color: #5a5c52; margin: 12px 0 4px; line-height: 1.5; }
 .gate-skip {
   width: 100%; margin-top: 8px; padding: 8px; background: none; border: none; cursor: pointer;
@@ -249,7 +249,7 @@ body { background: #0c231c; margin: 0; }
   font-family: 'Barlow', system-ui, sans-serif; font-size: 12px; color: rgba(245,241,228,0.75);
   background: transparent;
 }
-.gate-bar-mode { color: #d9a441; letter-spacing: 1.5px; text-transform: uppercase; font-size: 10px; font-weight: 600; }
+.gate-bar-mode { color: #d9a845; letter-spacing: 1.5px; text-transform: uppercase; font-size: 10px; font-weight: 600; }
 .gate-bar-mode.dim { color: rgba(245,241,228,0.45); }
 .gate-bar-id { font-family: 'IBM Plex Mono', monospace; }
 .gate-bar-note { color: #2e9e64; }
@@ -257,5 +257,5 @@ body { background: #0c231c; margin: 0; }
   background: none; border: 1px solid rgba(245,241,228,0.3); color: rgba(245,241,228,0.8);
   border-radius: 5px; padding: 3px 10px; font-size: 11px; cursor: pointer; font-family: inherit;
 }
-.gate-bar button:focus-visible { outline: 2px solid #d9a441; outline-offset: 2px; }
+.gate-bar button:focus-visible { outline: 2px solid #d9a845; outline-offset: 2px; }
 `;
