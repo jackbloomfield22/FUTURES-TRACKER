@@ -39,6 +39,13 @@ function profitFor(odds, stake) {
   if (!Number.isFinite(odds) || !Number.isFinite(stake)) return 0;
   return odds > 0 ? (stake * odds) / 100 : (stake * 100) / Math.abs(odds);
 }
+/* Free plays pay profit only: the stake is house money and never comes back. */
+function collectFor(p) {
+  const win = profitFor(p.odds, p.stake);
+  return p.freePlay ? win : (p.stake || 0) + win;
+}
+/* Cash actually risked; free-play stakes aren't your money. */
+const cashStaked = (rows) => rows.reduce((s, p) => s + (p.freePlay ? 0 : p.stake || 0), 0);
 function fmtMoney(n, signed = false) {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   const sign = n < 0 ? "-" : signed && n > 0 ? "+" : "";
@@ -152,7 +159,8 @@ const SEED_POSITIONS = [
 ];
 function netOf(p) {
   if (p.status === "open") return 0;
-  return (p.returned || 0) - (p.stake || 0);
+  /* a lost free play costs nothing: no cash was staked */
+  return (p.returned || 0) - (p.freePlay ? 0 : p.stake || 0);
 }
 
 /* ---------- Claude API ---------- */
@@ -366,10 +374,11 @@ For each bet, find:
 - status: "open", "won", "lost", or "cashout" if determinable from the UI (settled lists usually mark these), else null.
 - returned: for settled bets, total dollars paid back (0 if lost, cash-out amount if cashed out), else null.
 - bet_id: the Bet ID / Ticket # / Receipt number printed on the slip, as a string exactly as shown; null if not visible.
+- free_play: true if the wager used a free bet / bonus bet / free play credit (slips label it "Free Bet", "Bonus Bet", "FP", or show a $0 cash risk with a bonus applied); else false.
 - notes: boosts, promos, free bet, odds movement, or anything notable; else null.
 
 Respond with ONLY raw JSON. No markdown fences, no commentary. Exactly this shape:
-{"tickets":[{"book":"DraftKings","sport":"MLB","market":"AL Cy Young","selection":"George Kirby","odds":"+2000","stake":25,"to_win":500,"date_placed":null,"status":"open","returned":null,"bet_id":"ABC123456","notes":null}]}
+{"tickets":[{"book":"DraftKings","sport":"MLB","market":"AL Cy Young","selection":"George Kirby","odds":"+2000","stake":25,"to_win":500,"date_placed":null,"status":"open","returned":null,"bet_id":"ABC123456","free_play":false,"notes":null}]}
 
 Rules:
 - One entry per bet. A parlay is ONE ticket: market "Parlay", selection summarizes the legs.
@@ -402,7 +411,7 @@ async function parseSlip(base64, mediaType) {
         {
           role: "user",
           content:
-            'Convert the following into valid JSON of exactly this shape: {"tickets":[{"book":"","sport":"","market":"","selection":"","odds":"","stake":0,"to_win":0,"date_placed":null,"status":null,"returned":null,"bet_id":null,"notes":null}]}. Reply with ONLY the JSON, nothing else:\n\n' +
+            'Convert the following into valid JSON of exactly this shape: {"tickets":[{"book":"","sport":"","market":"","selection":"","odds":"","stake":0,"to_win":0,"date_placed":null,"status":null,"returned":null,"bet_id":null,"free_play":false,"notes":null}]}. Reply with ONLY the JSON, nothing else:\n\n' +
             raw,
         },
       ],
@@ -437,6 +446,7 @@ function ticketToDraft(j, preview) {
     season: j.season || guessSeason(sport, dateP),
     notes: j.notes || "",
     betId: j.bet_id !== null && j.bet_id !== undefined ? String(j.bet_id).trim() : "",
+    freePlay: !!j.free_play,
     logSettled: !!st,
     result: st || "won",
     returned: st && st !== "lost" && j.returned !== null && j.returned !== undefined ? String(j.returned) : "",
@@ -448,7 +458,7 @@ function ticketToDraft(j, preview) {
 async function marketCheck(openRows, settledRows) {
   const p0 = openRows[0];
   const lines = openRows
-    .map((p, i) => `- Leg ${i + 1}: ${p.selection} at ${fmtOdds(p.odds)}, stake ${fmtMoney(p.stake)}, collects ${fmtMoney(p.stake + profitFor(p.odds, p.stake))}`)
+    .map((p, i) => `- Leg ${i + 1}: ${p.selection} at ${fmtOdds(p.odds)}, stake ${fmtMoney(p.stake)}, collects ${fmtMoney(collectFor(p))}`)
     .join("\n");
   const realized = (settledRows || []).reduce((s, p) => s + netOf(p), 0);
   const realizedLine =
@@ -477,7 +487,7 @@ No sentences, no advice, no buy/sell/hold verdicts, no explanations, no markdown
 async function edgeCheck(p, splitLegs) {
   const prompt = `Today is ${todayISO()}. I hold this open futures bet:
 Sport: ${p.sport} | Market: ${p.market} | Selection: ${p.selection}
-My odds: ${fmtOdds(p.odds)} | Stake: ${fmtMoney(p.stake)} | To collect if it wins: ${fmtMoney(p.stake + profitFor(p.odds, p.stake))}${splitLegs > 0 ? `
+My odds: ${fmtOdds(p.odds)} | Stake: ${fmtMoney(p.stake)} | To collect if it wins: ${fmtMoney(collectFor(p))}${splitLegs > 0 ? `
 Note: this is one of ${splitLegs + 1} split tickets I hold on this same selection in this market, deliberately staggered so I can cash legs out separately. Judge this leg on its own but factor that in.` : ""}
 
 Search the web for the CURRENT odds on this exact market and selection. Reply as a quote line, nothing else:
@@ -507,6 +517,7 @@ const blankDraft = () => ({
   season: guessSeason("MLB"),
   notes: "",
   betId: "",
+  freePlay: false,
   logSettled: false,
   result: "won",
   returned: "",
@@ -841,6 +852,7 @@ export default function FuturesBook() {
           season: p.season || guessSeason(p.sport, p.datePlaced),
           notes: p.notes || "",
           betId: p.betId ? String(p.betId) : "",
+          freePlay: !!p.freePlay,
           status: ["open", "won", "lost", "cashout"].includes(p.status) ? p.status : "open",
           returned: p.returned === null || p.returned === undefined ? null : Number(p.returned),
           dateSettled: p.dateSettled || null,
@@ -894,7 +906,7 @@ export default function FuturesBook() {
       persist(
         positions.map((p) =>
           p.id === draft.editingId
-            ? { ...p, book: draft.book.trim(), sport: draft.sport, market: draft.market.trim(), selection: draft.selection.trim(), odds, stake, datePlaced: draft.datePlaced, season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced), notes: draft.notes.trim(), betId: (draft.betId || "").trim() }
+            ? { ...p, book: draft.book.trim(), sport: draft.sport, market: draft.market.trim(), selection: draft.selection.trim(), odds, stake, datePlaced: draft.datePlaced, season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced), notes: draft.notes.trim(), betId: (draft.betId || "").trim(), freePlay: !!draft.freePlay }
             : p
         )
       );
@@ -914,6 +926,7 @@ export default function FuturesBook() {
       season: draft.season.trim() || guessSeason(draft.sport, draft.datePlaced),
       notes: draft.notes.trim(),
       betId: (draft.betId || "").trim(),
+      freePlay: !!draft.freePlay,
       status: "open",
       returned: null,
       dateSettled: null,
@@ -925,7 +938,7 @@ export default function FuturesBook() {
         draft.result === "lost"
           ? 0
           : draft.result === "won"
-          ? draft.returned !== "" ? parseFloat(draft.returned) : stake + profitFor(odds, stake)
+          ? draft.returned !== "" ? parseFloat(draft.returned) : (draft.freePlay ? 0 : stake) + profitFor(odds, stake)
           : parseFloat(draft.returned || 0);
     }
     persist([base, ...positions]);
@@ -965,7 +978,7 @@ export default function FuturesBook() {
         if (p.status === "open" && marketKey(p) === key) {
           if (sameSel(p.selection, t.selection)) {
             alsoWon++;
-            return { ...p, status: "won", returned: p.stake + profitFor(p.odds, p.stake), dateSettled: todayISO() };
+            return { ...p, status: "won", returned: collectFor(p), dateSettled: todayISO() };
           }
           alsoLost++;
           return { ...p, status: "lost", returned: 0, dateSettled: todayISO() };
@@ -1020,6 +1033,7 @@ export default function FuturesBook() {
       season: p.season || "",
       notes: p.notes || "",
       betId: p.betId || "",
+      freePlay: !!p.freePlay,
     });
     setView("add");
   };
@@ -1096,8 +1110,8 @@ export default function FuturesBook() {
   /* derived */
   const open = positions.filter((p) => p.status === "open");
   const settled = positions.filter((p) => p.status !== "open");
-  const atRisk = open.reduce((s, p) => s + p.stake, 0);
-  const toWin = open.reduce((s, p) => s + p.stake + profitFor(p.odds, p.stake), 0);
+  const atRisk = cashStaked(open);
+  const toWin = open.reduce((s, p) => s + collectFor(p), 0);
   const allTimeNet = settled.reduce((s, p) => s + netOf(p), 0);
 
   const matchesFilters = (p) =>
@@ -1413,10 +1427,19 @@ export default function FuturesBook() {
                 const ok = o !== null && Number.isFinite(st);
                 return (
                   <div className="fb-collect">
-                    To collect if it hits: <strong className="gold">{ok ? fmtMoney(st + profitFor(o, st)) : "—"}</strong>
+                    To collect if it hits: <strong className="gold">{ok ? fmtMoney((draft.freePlay ? 0 : st) + profitFor(o, st)) : "—"}</strong>
                   </div>
                 );
               })()}
+
+              <label className="fb-check">
+                <input
+                  type="checkbox"
+                  checked={!!draft.freePlay}
+                  onChange={(e) => setDraft({ ...draft, freePlay: e.target.checked })}
+                />
+                Free play / bonus bet (stake is house money — a loss costs $0)
+              </label>
 
               {!draft.editingId && (
                 <label className="fb-check">
@@ -1526,7 +1549,7 @@ export default function FuturesBook() {
                   <div className="ticket-body">
                     <div className="ticket-top">
                       <span className="ticket-market">{p.market || p.sport}</span>
-                      <span className="ticket-meta">{p.book || "—"} · {p.season}{legStr}{p.betId ? " · #" + p.betId : ""}</span>
+                      <span className="ticket-meta">{p.book || "—"} · {p.season}{legStr}{p.betId ? " · #" + p.betId : ""}{p.freePlay ? " · FREE PLAY" : ""}</span>
                     </div>
                     <div className="ticket-selection">{p.selection}</div>
                     {p.notes && <div className="ticket-notes">{p.notes}</div>}
@@ -1556,7 +1579,7 @@ export default function FuturesBook() {
                         ) : (
                           <>
                             <span className="fb-dim">Grade it:</span>
-                            <button className="fb-btn small win-btn" onClick={() => settle(p.id, "won", p.stake + profitFor(p.odds, p.stake))}>Won {fmtMoney(p.stake + profitFor(p.odds, p.stake))}</button>
+                            <button className="fb-btn small win-btn" onClick={() => settle(p.id, "won", collectFor(p))}>Won {fmtMoney(collectFor(p))}</button>
                             <button className="fb-btn small loss-btn" onClick={() => settle(p.id, "lost", 0)}>Lost</button>
                             <button className="fb-btn small" onClick={() => setSettling({ id: p.id, mode: "cashout", amount: "" })}>Cash out…</button>
                             <button className="fb-btn ghost small" onClick={() => setSettling(null)}>Cancel</button>
@@ -1581,8 +1604,8 @@ export default function FuturesBook() {
 
                   <div className="ticket-stub">
                     <div className="stub-odds">{fmtOdds(p.odds)}</div>
-                    <div className="stub-line"><label>Risk</label><span>{fmtMoney(p.stake)}</span></div>
-                    <div className="stub-line"><label>Collect</label><span>{fmtMoney(p.stake + profitFor(p.odds, p.stake))}</span></div>
+                    <div className="stub-line"><label>{p.freePlay ? "Free play" : "Risk"}</label><span>{fmtMoney(p.stake)}</span></div>
+                    <div className="stub-line"><label>Collect</label><span>{fmtMoney(collectFor(p))}</span></div>
                     {live && live.prices[p.id] && (() => {
                       const lp = live.prices[p.id];
                       const drift = liveDrift(p, lp);
@@ -1627,10 +1650,10 @@ export default function FuturesBook() {
               {openGroupList.map(([k, openRows, settledRows], gi) => {
                 const p0 = openRows[0];
                 const sportHead = gi === 0 || openGroupList[gi - 1][1][0].sport !== p0.sport ? p0.sport : null;
-                const staked = openRows.reduce((s, p) => s + p.stake, 0);
+                const staked = cashStaked(openRows);
                 const bySel = {};
                 openRows.forEach((p) => {
-                  bySel[p.selection] = (bySel[p.selection] || 0) + p.stake + profitFor(p.odds, p.stake);
+                  bySel[p.selection] = (bySel[p.selection] || 0) + collectFor(p);
                 });
                 const best = Object.entries(bySel).sort((a, b) => b[1] - a[1])[0];
                 const realized = settledRows.reduce((s, p) => s + netOf(p), 0);
@@ -1663,9 +1686,10 @@ export default function FuturesBook() {
                               {p.selection}
                               {mates.length > 1 && <em className="mkt-leg-tag">leg {legIdx + 1}/{mates.length}</em>}
                               <em className="mkt-odds">{fmtOdds(p.odds)}</em>
+                              {p.freePlay && <em className="mkt-leg-tag">free play</em>}
                             </span>
                             <span className="mkt-leg-right">
-                              {fmtMoney(p.stake)} → {fmtMoney(p.stake + profitFor(p.odds, p.stake))}
+                              {fmtMoney(p.stake)} → {fmtMoney(collectFor(p))}
                               <button
                                 className="fb-link"
                                 onClick={() => setSettling(isActive ? null : { id: p.id, mode: "grade" })}
@@ -1690,7 +1714,7 @@ export default function FuturesBook() {
                                 </>
                               ) : (
                                 <>
-                                  <button className="fb-btn small win-btn" onClick={() => settle(p.id, "won", p.stake + profitFor(p.odds, p.stake))}>Won {fmtMoney(p.stake + profitFor(p.odds, p.stake))}</button>
+                                  <button className="fb-btn small win-btn" onClick={() => settle(p.id, "won", collectFor(p))}>Won {fmtMoney(collectFor(p))}</button>
                                   <button className="fb-btn small loss-btn" onClick={() => settle(p.id, "lost", 0)}>Lost</button>
                                   <button className="fb-btn small" onClick={() => setSettling({ id: p.id, mode: "cashout", amount: "" })}>Cash out…</button>
                                   <button className="fb-btn ghost small" onClick={() => setSettling(null)}>Cancel</button>
@@ -1737,7 +1761,7 @@ export default function FuturesBook() {
                 const w = rows.filter((p) => p.status === "won").length;
                 const l = rows.filter((p) => p.status === "lost").length;
                 const c = rows.filter((p) => p.status === "cashout").length;
-                const staked = rows.reduce((s, p) => s + p.stake, 0);
+                const staked = cashStaked(rows);
                 const net = rows.reduce((s, p) => s + netOf(p), 0);
                 const roi = staked ? (net / staked) * 100 : 0;
                 return (
@@ -1828,7 +1852,7 @@ export default function FuturesBook() {
                 const w = rows.filter((p) => p.status === "won").length;
                 const l = rows.filter((p) => p.status === "lost").length;
                 const c = rows.filter((p) => p.status === "cashout").length;
-                const staked = rows.reduce((s, p) => s + p.stake, 0);
+                const staked = cashStaked(rows);
                 const net = rows.reduce((s, p) => s + netOf(p), 0);
                 const roi = staked ? (net / staked) * 100 : 0;
                 return (
@@ -1852,7 +1876,7 @@ export default function FuturesBook() {
                           </span>
                           <span className="hist-sel">
                             {p.selection}
-                            <em>{p.market}{p.book ? " · " + p.book : ""}</em>
+                            <em>{p.market}{p.book ? " · " + p.book : ""}{p.freePlay ? " · Free play" : ""}</em>
                           </span>
                           <span className="hist-odds">{fmtOdds(p.odds)}</span>
                           <span className="hist-stake">{fmtMoney(p.stake)}</span>
