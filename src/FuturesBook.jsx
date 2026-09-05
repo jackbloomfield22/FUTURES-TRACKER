@@ -559,6 +559,7 @@ export default function FuturesBook() {
   const [seasonFilter, setSeasonFilter] = useState("all");
   const [sportFilter, setSportFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [query, setQuery] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [live, setLive] = useState(null); // { prices, misses, errors, ts }
   const [liveBusy, setLiveBusy] = useState(false);
@@ -1114,12 +1115,20 @@ export default function FuturesBook() {
   const toWin = open.reduce((s, p) => s + collectFor(p), 0);
   const allTimeNet = settled.reduce((s, p) => s + netOf(p), 0);
 
+  /* free-text search: every word must land somewhere on the ticket */
+  const q = query.trim().toLowerCase();
+  const matchesQuery = (p) => {
+    if (!q) return true;
+    const hay = [p.selection, p.market, marketType(p.market), p.book, p.notes, p.betId, p.season].filter(Boolean).join(" ").toLowerCase();
+    return q.split(/\s+/).every((w) => hay.includes(w));
+  };
   const matchesFilters = (p) =>
+    matchesQuery(p) &&
     (sportFilter === "all" || p.sport === sportFilter) &&
     (typeFilter === "all" || marketType(p.market) === typeFilter);
   const openShown = open.filter(matchesFilters);
   const settledShown = settled.filter(matchesFilters);
-  const clearFilters = () => { setSportFilter("all"); setTypeFilter("all"); };
+  const clearFilters = () => { setSportFilter("all"); setTypeFilter("all"); setQuery(""); };
 
   const seasons = {};
   settledShown.forEach((p) => {
@@ -1504,7 +1513,7 @@ export default function FuturesBook() {
               No open tickets. <button className="fb-link" onClick={() => setView("add")}>Drop a slip screenshot</button> to start the book.
             </div>
           )}
-          <FilterBar tickets={open} sportFilter={sportFilter} typeFilter={typeFilter} onSport={setSportFilter} onType={setTypeFilter} />
+          <FilterBar tickets={open} sportFilter={sportFilter} typeFilter={typeFilter} onSport={setSportFilter} onType={setTypeFilter} query={query} onQuery={setQuery} shown={openShown.length} />
           {open.length > 0 && (
             <div className="fb-liveband">
               <button className="fb-btn small" onClick={() => refreshLive(open)} disabled={liveBusy}
@@ -1834,7 +1843,7 @@ export default function FuturesBook() {
 
           {settled.length > 0 && (
             <>
-              <FilterBar tickets={settled} sportFilter={sportFilter} typeFilter={typeFilter} onSport={setSportFilter} onType={setTypeFilter} />
+              <FilterBar tickets={settled} sportFilter={sportFilter} typeFilter={typeFilter} onSport={setSportFilter} onType={setTypeFilter} query={query} onQuery={setQuery} shown={settledShown.length} />
               <div className="fb-filter">
                 <select value={effSeason} onChange={(e) => setSeasonFilter(e.target.value)}>
                   <option value="all">All seasons</option>
@@ -1917,7 +1926,7 @@ function Chip({ label, active, onClick, title }) {
    only that league's markets (with counts scoped to it). Switching leagues
    resets the market pick so a hidden stale filter can never blank the list.
    Tapping an active chip clears it. New leagues/types show up automatically. */
-function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType }) {
+function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType, query, onQuery, shown }) {
   if (!tickets.length) return null;
   const sportOrder = ["MLB", "NBA", "NFL", "NHL", "Soccer", "Golf", "Tennis", "Other"];
   const idx = (s) => { const i = sportOrder.indexOf(s); return i === -1 ? 99 : i; };
@@ -1934,9 +1943,26 @@ function FilterBar({ tickets, sportFilter, typeFilter, onSport, onType }) {
   });
   const types = Object.keys(typeCounts).sort((a, b) => typeCounts[b] - typeCounts[a] || a.localeCompare(b));
   const pickSport = (s) => { onSport(s); onType("all"); };
-  if (sports.length < 2 && types.length < 2) return null;
+  const search = (
+    <div className="fb-chip-row">
+      <span className="fb-chip-label">Find</span>
+      <div className="fb-search">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder="Search by name, market, book, bet ID…"
+          aria-label="Search tickets"
+        />
+        {query && <button onClick={() => onQuery("")} aria-label="Clear search">×</button>}
+      </div>
+      {query.trim() && <span className="fb-filter-hint">{shown} match{shown === 1 ? "" : "es"}</span>}
+    </div>
+  );
+  if (sports.length < 2 && types.length < 2) return <div className="fb-filters">{search}</div>;
   return (
     <div className="fb-filters">
+      {search}
       {sports.length > 1 && (
         <div className="fb-chip-row">
           <span className="fb-chip-label">League</span>
@@ -2128,6 +2154,11 @@ const css = `
 .fb-chip { background: transparent; border: 1px solid rgba(245,241,228,0.25); color: rgba(245,241,228,0.85); padding: 4px 12px; border-radius: 999px; font-size: 12px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fb-chip-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(245,241,228,0.45); align-self: center; min-width: 48px; }
 .fb-filter-hint { font-size: 12px; color: rgba(245,241,228,0.45); align-self: center; font-style: italic; }
+.fb-search { position: relative; flex: 1; min-width: 200px; max-width: 340px; }
+.fb-search input { width: 100%; border: 1px solid rgba(245,241,228,0.25); background: rgba(0,0,0,0.25); color: var(--paper); border-radius: 999px; padding: 6px 30px 6px 14px; font-size: 13px; font-family: 'Barlow'; }
+.fb-search input::placeholder { color: rgba(245,241,228,0.4); }
+.fb-search input:focus { border-color: var(--brass); outline: none; }
+.fb-search button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--brass); font-size: 16px; line-height: 1; padding: 2px 6px; }
 .fb-chip.active { background: var(--brass); border-color: var(--brass); color: var(--ink); font-weight: 600; }
 
 /* tickets */
