@@ -165,11 +165,36 @@ function netOf(p) {
 
 /* ---------- Claude API ---------- */
 
+/* Cold starts, rate limits, and momentary network blips shouldn't read as
+   "disconnected": retry those a few times with backoff before giving up.
+   A hard failure (bad/missing key, 4xx) returns immediately since retrying
+   changes nothing. Each attempt also gets its own timeout so a hung
+   connection can't stall the app indefinitely. */
+const TRANSIENT_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [700, 1800, 4000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchResilient(url, options) {
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok || !TRANSIENT_STATUS.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
+    } catch (e) {
+      clearTimeout(timer);
+      if (attempt >= RETRY_DELAYS_MS.length) throw e;
+    }
+    await sleep(RETRY_DELAYS_MS[attempt]);
+  }
+}
+
 async function callClaude(body) {
   const payload = { model: "claude-sonnet-4-6", max_tokens: 1000, ...body };
 
   if (IS_ARTIFACT) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetchResilient("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -189,7 +214,7 @@ async function callClaude(body) {
     const headers = { "Content-Type": "application/json" };
     const session = getSession();
     if (session) headers["x-fb-session"] = session;
-    const res = await fetch("/api/ai", { method: "POST", headers, body: JSON.stringify(payload) });
+    const res = await fetchResilient("/api/ai", { method: "POST", headers, body: JSON.stringify(payload) });
     const data = await res.json().catch(() => null);
     if (res.ok && data && data.content) return data;
     if (data) proxyErr = (data.error && data.error.message) || data.error || null;
@@ -199,7 +224,7 @@ async function callClaude(body) {
   if (!key) {
     throw new Error(proxyErr || "no AI source. Sign in if this site has a server key, or add your own under AI settings in the + New ticket tab");
   }
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetchResilient("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -544,7 +569,7 @@ export default function FuturesBook() {
   const [batch, setBatch] = useState(null); // bulk intake progress: {done, total, found, failed}
   const [pasteText, setPasteText] = useState("");
   const [pasteErr, setPasteErr] = useState("");
-  const [aiStatus, setAiStatus] = useState("unknown");
+  const [aiStatus, setAiStatus] = useState("checking");
   const [aiErr, setAiErr] = useState("");
   const [serverInfo, setServerInfo] = useState(null); // /api/health: {kv, odds, ai}
   const [pendingSlip, setPendingSlip] = useState(null); // captured slip awaiting a ticket
@@ -890,13 +915,44 @@ export default function FuturesBook() {
       .catch(() => { /* no server on this deploy */ });
   }, []);
 
-  useEffect(() => {
-    if (aiStatus !== "unknown") return;
+  /* AI reachability is re-checked on its own, forever: a failure schedules the
+     next attempt with growing backoff instead of sitting "down" until reload,
+     and coming back online triggers an immediate recheck. */
+  const aiCheckSeq = useRef(0);
+  const aiRetryDelay = useRef(4000);
+  const aiRetryTimer = useRef(null);
+
+  const checkAi = useCallback(() => {
+    const seq = ++aiCheckSeq.current;
+    if (aiRetryTimer.current) { clearTimeout(aiRetryTimer.current); aiRetryTimer.current = null; }
     setAiStatus("checking");
     callClaude({ max_tokens: 8, messages: [{ role: "user", content: "Reply with OK" }] })
-      .then(() => { setAiStatus("ok"); setAiErr(""); })
-      .catch((e) => { setAiStatus("down"); setAiErr(e.message || ""); });
-  }, [aiStatus]);
+      .then(() => {
+        if (aiCheckSeq.current !== seq) return;
+        setAiStatus("ok");
+        setAiErr("");
+        aiRetryDelay.current = 4000;
+      })
+      .catch((e) => {
+        if (aiCheckSeq.current !== seq) return;
+        setAiStatus("down");
+        setAiErr(e.message || "");
+        const delay = aiRetryDelay.current;
+        aiRetryDelay.current = Math.min(delay * 1.7, 60000);
+        aiRetryTimer.current = setTimeout(() => { if (aiCheckSeq.current === seq) checkAi(); }, delay);
+      });
+  }, []);
+
+  useEffect(() => {
+    checkAi();
+    const onOnline = () => { aiRetryDelay.current = 1000; checkAi(); };
+    window.addEventListener("online", onOnline);
+    return () => {
+      aiCheckSeq.current++;
+      if (aiRetryTimer.current) clearTimeout(aiRetryTimer.current);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [checkAi]);
 
   /* save draft as position */
   const saveDraft = () => {
@@ -1041,7 +1097,7 @@ export default function FuturesBook() {
 
   const saveApiKey = () => {
     try { localStorage.setItem("fb-api-key", apiKeyDraft.trim()); } catch (e) { /* private mode */ }
-    setAiStatus("unknown");
+    checkAi();
   };
 
   const refreshLive = async (openList) => {
@@ -1080,31 +1136,23 @@ export default function FuturesBook() {
     : "AI unavailable: " + (aiErr || "sign in if this site has a server key, or add your own under AI settings in the + New ticket tab.");
 
   const runEdge = async (p) => {
-    if (aiStatus === "down") {
-      setEdges((e) => ({ ...e, [p.id]: { loading: false, err: AI_DOWN_MSG } }));
-      return;
-    }
     const splitLegs = open.filter((x) => x.id !== p.id && marketKey(x) === marketKey(p) && sameSel(x.selection, p.selection)).length;
     setEdges((e) => ({ ...e, [p.id]: { loading: true } }));
     try {
       const text = await edgeCheck(p, splitLegs);
       setEdges((e) => ({ ...e, [p.id]: { loading: false, text } }));
     } catch (err) {
-      setEdges((e) => ({ ...e, [p.id]: { loading: false, err: "Check failed. Try again." } }));
+      setEdges((e) => ({ ...e, [p.id]: { loading: false, err: err.message || AI_DOWN_MSG } }));
     }
   };
 
   const runMarketCheck = async (k, openRows, settledRows) => {
-    if (aiStatus === "down") {
-      setMarketChecks((m) => ({ ...m, [k]: { loading: false, err: AI_DOWN_MSG } }));
-      return;
-    }
     setMarketChecks((m) => ({ ...m, [k]: { loading: true } }));
     try {
       const text = await marketCheck(openRows, settledRows);
       setMarketChecks((m) => ({ ...m, [k]: { loading: false, text } }));
     } catch (err) {
-      setMarketChecks((m) => ({ ...m, [k]: { loading: false, err: "Check failed. Try again." } }));
+      setMarketChecks((m) => ({ ...m, [k]: { loading: false, err: err.message || AI_DOWN_MSG } }));
     }
   };
 
